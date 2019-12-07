@@ -8,10 +8,7 @@ if(NOT CMAKE_BUILD_TYPE)
       "Choose the type of build, options are: Debug Release RelWithDebInfo MinSizeRel." FORCE)
 endif()
 
-if (NOT LLVM_BUILD_TYPE)
-  set(LLVM_BUILD_TYPE ${CMAKE_BUILD_TYPE})
-endif()
-set(LLVM_CONFIG_EXECUTABLE ${CMAKE_SOURCE_DIR}/third_party/llvm/${LLVM_BUILD_TYPE}/bin/llvm-config)
+set(LLVM_CONFIG_EXECUTABLE ${TOB_FOLDER}/llvm/bin/llvm-config)
 if(NOT EXISTS ${LLVM_CONFIG_EXECUTABLE})
   message(FATAL_ERROR "llvm-config could not be found!")
 endif()
@@ -73,8 +70,8 @@ execute_process(
 set(CLANG_CXXFLAGS "")
 set(CLANG_INCLUDEDIR "${LLVM_SRC}/tools/clang/include" "${LLVM_BUILD}/tools/clang/include")
 
-set(ALIVE_DIR "${CMAKE_SOURCE_DIR}/third_party/alive2")
-set(ALIVE_LDFLAGS "-L ${ALIVE_DIR}/build -lalive2")
+set(ALIVE_DIR "${ALIVE2_FOLDER}")
+set(ALIVE_LDFLAGS "-L ${ALIVE_DIR}/lib -lalive2")
 
 set(CLANG_LIBS "-lclangCodeGen -lclangTooling -lclangRewrite -lclangFrontend -lclangAnalysis -lclangParse -lclangSerialization -lclangSema -lclangEdit -lclangAnalysis -lclangAST -lclangDriver -lclangLex -lclangBasic -lclangASTMatchers")
 
@@ -90,22 +87,29 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
   set(PASS_LDFLAGS "-Wl,-undefined,dynamic_lookup")
 endif()
 
-include_directories(include third_party/klee/include)
-include_directories(include "${ALIVE_DIR}")
-include_directories(include "${ALIVE_DIR}/alive2")
+if(${CMAKE_SYSTEM_NAME} MATCHES "Windows")
+  set(CMAKE_CXX_STANDARD 17)
+  set(CMAKE_CXX_STANDARD_REQUIRED ON)
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /std:c++17")
+  set(LLVM_CXXFLAGS "${LLVM_CXXFLAGS} -march=native -D_LIBCPP_VERSION /std:c++17")
+endif()
+
+include_directories(include ${KLEE_FOLDER}/include)
+include_directories(include ${ALIVE_DIR}/include)
+include_directories(include ${ALIVE_DIR}/include/alive2)
 
 set(KLEE_EXPR_FILES
-  third_party/klee/lib/Expr/Constraints.cpp
-  third_party/klee/lib/Expr/ExprBuilder.cpp
-  third_party/klee/lib/Expr/Expr.cpp
-  third_party/klee/lib/Expr/ExprEvaluator.cpp
-  third_party/klee/lib/Expr/ExprPPrinter.cpp
-  third_party/klee/lib/Expr/ExprSMTLIBPrinter.cpp
-  third_party/klee/lib/Expr/ExprUtil.cpp
-  third_party/klee/lib/Expr/ExprVisitor.cpp
-  third_party/klee/lib/Expr/Lexer.cpp
-  third_party/klee/lib/Expr/Parser.cpp
-  third_party/klee/lib/Expr/Updates.cpp
+  ${KLEE_FOLDER}/lib/Expr/Constraints.cpp
+  ${KLEE_FOLDER}/lib/Expr/ExprBuilder.cpp
+  ${KLEE_FOLDER}/lib/Expr/Expr.cpp
+  ${KLEE_FOLDER}/lib/Expr/ExprEvaluator.cpp
+  ${KLEE_FOLDER}/lib/Expr/ExprPPrinter.cpp
+  ${KLEE_FOLDER}/lib/Expr/ExprSMTLIBPrinter.cpp
+  ${KLEE_FOLDER}/lib/Expr/ExprUtil.cpp
+  ${KLEE_FOLDER}/lib/Expr/ExprVisitor.cpp
+  ${KLEE_FOLDER}/lib/Expr/Lexer.cpp
+  ${KLEE_FOLDER}/lib/Expr/Parser.cpp
+  ${KLEE_FOLDER}/lib/Expr/Updates.cpp
 )
 
 add_library(kleeExpr STATIC
@@ -116,7 +120,7 @@ find_path(HIREDIS_INCLUDE_DIR
   NAMES
   hiredis/hiredis.h
   PATHS
-  third_party/hiredis/install/include
+  ${DEPENDENCIES_FOLDER}/hiredis/include
   NO_DEFAULT_PATH)
 
 include_directories(${HIREDIS_INCLUDE_DIR}/hiredis)
@@ -125,17 +129,17 @@ find_library(HIREDIS_LIBRARY
   NAMES
   hiredis
   PATHS
-  third_party/hiredis/install/lib
+  ${DEPENDENCIES_FOLDER}/hiredis/lib
   NO_DEFAULT_PATH)
 
-find_library(ALIVE_LIBRARY alive2 PATHS "${ALIVE_DIR}/build" NO_DEFAULT_PATH)
+find_library(ALIVE_LIBRARY alive2 PATHS "${ALIVE_DIR}/lib" NO_DEFAULT_PATH)
 
 find_path(Z3_INCLUDE_DIRECTORY
   NAMES
   z3.h
   z3++.h
   PATHS
-  third_party/z3-install/include
+  ${DEPENDENCIES_FOLDER}/tob_libraries/z3/include
   NO_DEFAULT_PATH)
 
 include_directories(${Z3_INCLUDE_DIRECTORY})
@@ -144,14 +148,14 @@ find_library(Z3_LIBRARY
   NAMES
   libz3.a
   PATHS
-  third_party/z3-install/lib
+  ${DEPENDENCIES_FOLDER}/tob_libraries/z3/bin
   NO_DEFAULT_PATH)
 
 find_program(Z3
   NAMES
   z3
   PATHS
-  third_party/z3-install/bin
+  ${DEPENDENCIES_FOLDER}/tob_libraries/z3/bin
   NO_DEFAULT_PATH)
 
 set(TEST_SOLVER "-z3-path=${Z3}")
@@ -255,82 +259,28 @@ set(SOUPER_SOURCES
   ${SOUPER_TOOL_FILES}
   ${SOUPER_INFER_FILES})
 
-add_library(souperPass SHARED
+add_library(souperPass STATIC
   ${KLEE_EXPR_FILES}
   ${SOUPER_SOURCES}
   lib/Pass/Pass.cpp
 )
 
-add_library(souperPassProfileAll SHARED
+add_library(souperPassProfileAll STATIC
   ${KLEE_EXPR_FILES}
   ${SOUPER_SOURCES}
   lib/Pass/Pass.cpp
 )
 target_compile_definitions(souperPassProfileAll PRIVATE DYNAMIC_PROFILE_ALL=1)
 
-add_executable(clang-souper
-  tools/clang-souper.cpp
-)
-
-add_executable(souper
-  tools/souper.cpp
-)
-
-add_executable(internal-solver-test
-  tools/internal-solver-test.cpp
-)
-
-add_executable(lexer-test
-  tools/lexer-test.cpp
-)
-
-add_executable(parser-test
-  tools/parser-test.cpp
-)
-
-add_executable(souper-check
-  tools/souper-check.cpp
-)
-
-add_executable(souper-interpret
-  tools/souper-interpret.cpp
-)
-
-add_executable(count-insts
-  tools/count-insts.cpp
-)
-
-add_executable(extractor_tests
-  unittests/Extractor/ExtractorTests.cpp
-)
-
-add_executable(inst_tests
-  unittests/Inst/InstTests.cpp
-)
-
-add_executable(parser_tests
-  unittests/Parser/ParserTests.cpp
-)
-
-add_executable(interpreter_tests
-  unittests/Interpreter/InterpreterInfra.cpp
-  unittests/Interpreter/InterpreterTests.cpp)
-
 set(LLVM_LDFLAGS "${LLVM_LDFLAGS} ${ALIVE_LDFLAGS}")
-foreach(target souper internal-solver-test lexer-test parser-test souper-check count-insts
-	       souper-interpret
-               souperExtractor souperInfer souperInst souperKVStore souperParser
+foreach(target souperExtractor souperInfer souperInst souperKVStore souperParser
                souperSMTLIB2 souperTool souperPass souperPassProfileAll kleeExpr)
   set_target_properties(${target} PROPERTIES COMPILE_FLAGS "${LLVM_CXXFLAGS}")
   target_include_directories(${target} PRIVATE "${LLVM_INCLUDEDIR}")
 endforeach()
-foreach(target souperClangTool clang-souper)
+foreach(target souperClangTool)
   set_target_properties(${target} PROPERTIES COMPILE_FLAGS "${CLANG_CXXFLAGS} ${LLVM_CXXFLAGS}")
   target_include_directories(${target} PRIVATE "${LLVM_INCLUDEDIR}" ${CLANG_INCLUDEDIR})
-endforeach()
-foreach(target extractor_tests inst_tests parser_tests interpreter_tests)
-  set_target_properties(${target} PROPERTIES COMPILE_FLAGS "${GTEST_CXXFLAGS} ${LLVM_CXXFLAGS}")
-  target_include_directories(${target} PRIVATE "${LLVM_INCLUDEDIR}" "${GTEST_INCLUDEDIR}")
 endforeach()
 
 add_library(z3 STATIC IMPORTED)
@@ -352,24 +302,10 @@ target_link_libraries(souperTool souperExtractor souperSMTLIB2)
 target_link_libraries(souperPass ${PASS_LDFLAGS} ${HIREDIS_LIBRARY} ${ALIVE_LIBRARY} z3)
 target_link_libraries(souperPassProfileAll ${PASS_LDFLAGS} ${HIREDIS_LIBRARY} ${ALIVE_LIBRARY} z3)
 
-# executables
-target_link_libraries(souper souperExtractor souperKVStore souperParser souperSMTLIB2 souperTool kleeExpr ${HIREDIS_LIBRARY} ${ALIVE_LIBRARY} z3)
-target_link_libraries(internal-solver-test souperSMTLIB2)
-target_link_libraries(lexer-test souperParser)
-target_link_libraries(parser-test souperParser)
-target_link_libraries(souper-check souperTool souperExtractor souperKVStore souperSMTLIB2 souperParser ${HIREDIS_LIBRARY} ${ALIVE_LIBRARY} z3)
-target_link_libraries(souper-interpret souperTool souperExtractor souperKVStore souperSMTLIB2 souperParser ${HIREDIS_LIBRARY} ${ALIVE_LIBRARY} z3)
-target_link_libraries(clang-souper souperClangTool souperExtractor souperKVStore souperParser souperSMTLIB2 souperTool kleeExpr ${CLANG_LIBS} ${LLVM_LIBS} ${LLVM_LDFLAGS} ${HIREDIS_LIBRARY} ${ALIVE_LIBRARY} z3)
-target_link_libraries(count-insts souperParser)
-target_link_libraries(extractor_tests souperExtractor souperParser ${GTEST_LIBS} ${ALIVE_LIBRARY})
-target_link_libraries(inst_tests souperInfer souperInst souperExtractor ${GTEST_LIBS} ${ALIVE_LIBRARY})
-target_link_libraries(parser_tests souperParser ${GTEST_LIBS} ${ALIVE_LIBRARY})
-target_link_libraries(interpreter_tests souperInfer souperInst ${GTEST_LIBS} ${ALIVE_LIBRARY})
-
 SET(BUILD_CLANG_TOOL 1 CACHE BOOL "Build the Souper Clang tool")
 if (NOT BUILD_CLANG_TOOL)
   message(STATUS "Excluding Clang tool from build")
-  set_target_properties(souperClangTool clang-souper PROPERTIES EXCLUDE_FROM_ALL 1 EXCLUDE_FROM_DEFAULT_BUILD 1)
+  set_target_properties(souperClangTool PROPERTIES EXCLUDE_FROM_ALL 1 EXCLUDE_FROM_DEFAULT_BUILD 1)
 endif()
 
 set(TEST_SYNTHESIS "ON" CACHE STRING "Enable additional, computationally intensive synthesis tests")
@@ -392,23 +328,8 @@ configure_file(
 
 add_custom_target(check
   COMMAND ${CMAKE_BINARY_DIR}/run_lit
-  DEPENDS extractor_tests inst_tests parser-test parser_tests profileRuntime souper souper-check souper-interpret souperPass souperPassProfileAll count-insts interpreter_tests
+  DEPENDS profileRuntime souperPass souperPassProfileAll
   USES_TERMINAL)
-
-find_program(GO_EXECUTABLE NAMES go DOC "go executable")
-if(NOT GO_EXECUTABLE STREQUAL "GO_EXECUTABLE-NOTFOUND")
-  add_executable(souperweb-backend
-    tools/souperweb-backend.cpp
-  )
-  set_target_properties(souperweb-backend
-    PROPERTIES COMPILE_FLAGS "${LLVM_CXXFLAGS}")
-  target_include_directories(souperweb-backend PRIVATE "${LLVM_INCLUDEDIR}")
-
-  target_link_libraries(souperweb-backend souperTool souperExtractor souperKVStore souperSMTLIB2 souperParser souperInst ${HIREDIS_LIBRARY})
-
-  add_custom_target(souperweb ALL COMMAND ${GO_EXECUTABLE} build -o ${CMAKE_BINARY_DIR}/souperweb ${CMAKE_SOURCE_DIR}/tools/souperweb.go
-                                  COMMENT "Building souperweb")
-endif()
 
 add_library(profileRuntime STATIC
   runtime/souperPassProfile.c)
