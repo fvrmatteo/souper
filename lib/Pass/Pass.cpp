@@ -77,7 +77,7 @@ static const bool DynamicProfileAll = true;
 static const bool DynamicProfileAll = false;
 #endif
 
-struct SouperPass : public ModulePass {
+struct SouperPass : public FunctionPass {
   static char ID;
 
   Value* getOperand(Inst* I, unsigned index, Instruction *ReplacedInst,
@@ -96,7 +96,7 @@ struct SouperPass : public ModulePass {
   }
 
 public:
-  SouperPass() : ModulePass(ID) {
+  SouperPass() : FunctionPass(ID) {
     if (!S) {
       S = GetSolverFromArgs(KV);
       if (StaticProfile && !KV)
@@ -387,35 +387,38 @@ public:
                        Inst::getKindName(I->K) + " in getValue()");
   }
 
-  bool runOnFunction(Function *F) {
+  bool runOnFunction(Function &F) override {
+    if (F.isDeclaration())
+		return false;
+
     bool Changed = false;
     InstContext IC;
     ExprBuilderContext EBC;
     std::map<Inst *, Value *> ReplacedValues;
-    LoopInfo *LI = &getAnalysis<LoopInfoWrapperPass>(*F).getLoopInfo();
+    LoopInfo *LI = &getAnalysis<LoopInfoWrapperPass>().getLoopInfo();
     if (!LI)
       report_fatal_error("getLoopInfo() failed");
-    auto &DT = getAnalysis<DominatorTreeWrapperPass>(*F).getDomTree();
-    DemandedBits *DB = &getAnalysis<DemandedBitsWrapperPass>(*F).getDemandedBits();
+    auto &DT = getAnalysis<DominatorTreeWrapperPass>().getDomTree();
+    DemandedBits *DB = &getAnalysis<DemandedBitsWrapperPass>().getDemandedBits();
     if (!DB)
       report_fatal_error("getDemandedBits() failed");
-    LazyValueInfo *LVI = &getAnalysis<LazyValueInfoWrapperPass>(*F).getLVI();
+    LazyValueInfo *LVI = &getAnalysis<LazyValueInfoWrapperPass>().getLVI();
     if (!LVI)
       report_fatal_error("getLVI() failed");
-    ScalarEvolution *SE = &getAnalysis<ScalarEvolutionWrapperPass>(*F).getSE();
+    ScalarEvolution *SE = &getAnalysis<ScalarEvolutionWrapperPass>().getSE();
     if (!SE)
       report_fatal_error("getSE() failed");
     TargetLibraryInfo* TLI = &getAnalysis<TargetLibraryInfoWrapperPass>().getTLI();
     if (!TLI)
       report_fatal_error("getTLI() failed");
-    FunctionCandidateSet CS = ExtractCandidatesFromPass(F, LI, DB, LVI, SE, TLI, IC, EBC);
+    FunctionCandidateSet CS = ExtractCandidatesFromPass(&F, LI, DB, LVI, SE, TLI, IC, EBC);
 
     std::string FunctionName;
-    if (F->hasLocalLinkage()) {
+    if (F.hasLocalLinkage()) {
       FunctionName =
-        (F->getParent()->getModuleIdentifier() + ":" + F->getName()).str();
+        (F.getParent()->getModuleIdentifier() + ":" + F.getName()).str();
     } else {
-      FunctionName = F->getName();
+      FunctionName = F.getName();
     }
 
     if (DebugLevel > 1) {
@@ -453,7 +456,7 @@ public:
                                             Context), HField, 1);
       }
       if (DynamicProfileAll) {
-        dynamicProfile(F, Cand);
+        dynamicProfile(&F, Cand);
         Changed = true;
         continue;
       }
@@ -475,7 +478,7 @@ public:
       IRBuilder<> Builder(I);
 
       Value *NewVal = getValue(Cand.Mapping.RHS, I, EBC, DT,
-                               ReplacedValues, Builder, F->getParent());
+                               ReplacedValues, Builder, F.getParent());
 
       // if LHS comes from use, then NewVal should be a constant
       assert(Cand.Mapping.LHS->HarvestKind != HarvestType::HarvestedFromUse ||
@@ -508,10 +511,10 @@ public:
         if (DebugLevel > 2) {
           if (DebugLevel > 4) {
             errs() << "\nModule before replacement:\n";
-            F->getParent()->dump();
+            F.getParent()->dump();
           } else {
             errs() << "\nFunction before replacement:\n";
-            F->print(errs());
+            F.print(errs());
           }
         }
         errs() << "\n";
@@ -529,7 +532,7 @@ public:
       }
 
       if (DynamicProfile)
-        dynamicProfile(F, Cand);
+        dynamicProfile(&F, Cand);
 
       if (Cand.Mapping.LHS->HarvestKind == HarvestType::HarvestedFromDef) {
         I->replaceAllUsesWith(NewVal);
@@ -552,31 +555,19 @@ public:
     if (DebugLevel > 2) {
       if (DebugLevel > 4) {
         errs() << "\nModule after replacement:\n";
-        F->getParent()->dump();
+        F.getParent()->dump();
       } else {
         errs() << "\nFunction after replacement:\n\n";
-        F->print(errs());
+        F.print(errs());
       }
       errs() << "\n";
     }
 
+	if(DebugLevel > 1) errs() << "\nTotal of " << ReplacementsDone
+                             << " replacements done on this module\n";
+
     return Changed;
   }
-
-  bool runOnModule(Module &M) {
-    bool Changed = false;
-    // get the list first since the dynamic profiling adds functions as it goes
-    std::vector<Function *> FL;
-    for (auto &I : M)
-      FL.push_back((Function *)&I);
-    for (auto *F : FL)
-      if (!F->isDeclaration())
-        Changed = runOnFunction(F) || Changed;
-    if (DebugLevel > 1)
-      errs() << "\nTotal of " << ReplacementsDone << " replacements done on this module\n";
-    return Changed;
-  }
-
 };
 
 char SouperPass::ID = 0;
@@ -603,8 +594,7 @@ static struct Register {
   }
 } X;
 
-void registerSouperPass(
-    const llvm::PassManagerBuilder &Builder, llvm::legacy::PassManagerBase &PM) {
+void registerSouperPass(llvm::legacy::PassManagerBase &PM) {
   PM.add(new SouperPass);
 }
 
