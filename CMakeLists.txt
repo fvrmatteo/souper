@@ -8,7 +8,12 @@ if(NOT CMAKE_BUILD_TYPE)
       "Choose the type of build, options are: Debug Release RelWithDebInfo MinSizeRel." FORCE)
 endif()
 
-set(LLVM_CONFIG_EXECUTABLE ${TOB_FOLDER}/llvm/bin/llvm-config)
+if(WIN32)
+  set(LLVM_CONFIG_EXECUTABLE ${TOB_FOLDER}/llvm/bin/llvm-config.exe)
+else()
+  set(LLVM_CONFIG_EXECUTABLE ${TOB_FOLDER}/llvm/bin/llvm-config)
+endif()
+
 if(NOT EXISTS ${LLVM_CONFIG_EXECUTABLE})
   message(FATAL_ERROR "llvm-config could not be found!")
 endif()
