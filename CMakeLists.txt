@@ -86,17 +86,15 @@ set(GTEST_LIBS "-lgtest_main -lgtest")
 
 set(LLVM_CXXFLAGS "${LLVM_CXXFLAGS} -std=c++17")
 
-if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
-  set(CMAKE_XCODE_ATTRIBUTE_CLANG_CXX_LANGUAGE_STANDARD "c++17")
-  set(LLVM_CXXFLAGS "${LLVM_CXXFLAGS} -fvisibility-inlines-hidden")
-  set(PASS_LDFLAGS "-Wl,-undefined,dynamic_lookup")
-endif()
-
-if(${CMAKE_SYSTEM_NAME} MATCHES "Windows")
+if(WIN32)
   set(CMAKE_CXX_STANDARD 17)
   set(CMAKE_CXX_STANDARD_REQUIRED ON)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /std:c++17")
   set(LLVM_CXXFLAGS "${LLVM_CXXFLAGS} -march=native -D_LIBCPP_VERSION /std:c++17")
+else()
+  set(CMAKE_XCODE_ATTRIBUTE_CLANG_CXX_LANGUAGE_STANDARD "c++17")
+  set(LLVM_CXXFLAGS "${LLVM_CXXFLAGS} -fvisibility-inlines-hidden")
+  set(PASS_LDFLAGS "-Wl,-undefined,dynamic_lookup")
 endif()
 
 include_directories(include ${KLEE_FOLDER}/include)
@@ -270,16 +268,9 @@ add_library(souperPass STATIC
   lib/Pass/Pass.cpp
 )
 
-add_library(souperPassProfileAll STATIC
-  ${KLEE_EXPR_FILES}
-  ${SOUPER_SOURCES}
-  lib/Pass/Pass.cpp
-)
-target_compile_definitions(souperPassProfileAll PRIVATE DYNAMIC_PROFILE_ALL=1)
-
 set(LLVM_LDFLAGS "${LLVM_LDFLAGS} ${ALIVE_LDFLAGS}")
 foreach(target souperExtractor souperInfer souperInst souperKVStore souperParser
-               souperSMTLIB2 souperTool souperPass souperPassProfileAll kleeExpr)
+               souperSMTLIB2 souperTool souperPass kleeExpr)
   set_target_properties(${target} PROPERTIES COMPILE_FLAGS "${LLVM_CXXFLAGS}")
   target_include_directories(${target} PRIVATE "${LLVM_INCLUDEDIR}")
 endforeach()
@@ -305,7 +296,6 @@ target_link_libraries(souperTool souperExtractor souperSMTLIB2)
 
 # dynamic
 target_link_libraries(souperPass ${PASS_LDFLAGS} ${HIREDIS_LIBRARY} ${ALIVE_LIBRARY} z3)
-target_link_libraries(souperPassProfileAll ${PASS_LDFLAGS} ${HIREDIS_LIBRARY} ${ALIVE_LIBRARY} z3)
 
 SET(BUILD_CLANG_TOOL 1 CACHE BOOL "Build the Souper Clang tool")
 if (NOT BUILD_CLANG_TOOL)
@@ -333,14 +323,10 @@ configure_file(
 
 add_custom_target(check
   COMMAND ${CMAKE_BINARY_DIR}/run_lit
-  DEPENDS profileRuntime souperPass souperPassProfileAll
+  DEPENDS profileRuntime souperPass
   USES_TERMINAL)
 
-add_library(profileRuntime STATIC
-  runtime/souperPassProfile.c)
-
 set(SOUPER_PASS ${CMAKE_BINARY_DIR}/${CMAKE_SHARED_LIBRARY_PREFIX}souperPass${CMAKE_SHARED_LIBRARY_SUFFIX})
-set(SOUPER_PASS_PROFILE_ALL ${CMAKE_BINARY_DIR}/${CMAKE_SHARED_LIBRARY_PREFIX}souperPassProfileAll${CMAKE_SHARED_LIBRARY_SUFFIX})
 set(PROFILE_LIBRARY ${CMAKE_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}profileRuntime${CMAKE_STATIC_LIBRARY_SUFFIX})
 configure_file(${CMAKE_SOURCE_DIR}/utils/reduce.in ${CMAKE_BINARY_DIR}/reduce @ONLY)
 configure_file(${CMAKE_SOURCE_DIR}/utils/cache_dump.in ${CMAKE_BINARY_DIR}/cache_dump @ONLY)

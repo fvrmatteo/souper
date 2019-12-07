@@ -25,12 +25,21 @@
 #include "souper/SMTLIB2/Solver.h"
 #include <fcntl.h>
 #include <stdio.h>
-#include <sys/resource.h>
 #include <sys/stat.h>
-#include <sys/time.h>
 #include <sys/types.h>
-#include <unistd.h>
 #include <system_error>
+
+#ifdef _WIN32
+#include <time.h>
+#include <io.h>
+#define STDIN_FILENO 0
+#define STDOUT_FILENO 1
+#define STDERR_FILENO 2
+#else
+#include <sys/resource.h>
+#include <sys/time.h>
+#include <unistd.h>
+#endif
 
 using namespace llvm;
 using namespace souper;
@@ -281,7 +290,7 @@ public:
         return EC;
       }
 
-      if ((*MB)->getBuffer().startswith("sat\n")) {
+      if ((*MB)->getBuffer().trim().startswith("sat")) {
         ::remove(OutputPath.c_str());
         Result = true;
         ++Sats;
@@ -293,7 +302,7 @@ public:
         if (!ErrStr.empty())
           return std::make_error_code(std::errc::protocol_error);
         return std::error_code();
-      } else if ((*MB)->getBuffer().startswith("unsat\n")) {
+      } else if ((*MB)->getBuffer().trim().startswith("unsat")) {
         ::remove(OutputPath.c_str());
         Result = false;
         ++Unsats;
@@ -319,6 +328,10 @@ SolverProgram souper::makeExternalSolverProgram(StringRef Path) {
     std::vector<StringRef> ArgPtrs;
     ArgPtrs.push_back(PathStr);
     ArgPtrs.insert(ArgPtrs.end(), Args.begin(), Args.end());
+
+    std::string Err = "err.txt";
+    RedirectErr = Err;
+
     Optional<StringRef> Redirects[] = {RedirectIn, RedirectOut, RedirectErr};
     return sys::ExecuteAndWait(PathStr, ArgPtrs, None, Redirects, Timeout);
   };
@@ -329,8 +342,13 @@ SolverProgram souper::makeInternalSolverProgram(int MainPtr(int argc,
   return [MainPtr](const std::vector<std::string> &Args, StringRef RedirectIn,
                    StringRef RedirectOut, StringRef RedirectErr,
                    unsigned Timeout) {
+#ifndef _WIN32
     int pid = fork();
+#else
+    int pid = 0;
+#endif
     if (pid == 0) {
+#ifndef _WIN32
       int InFD = open(RedirectIn.str().c_str(), O_RDONLY);
       if (InFD == -1) _exit(1);
       int OutFD = open(RedirectOut.str().c_str(), O_WRONLY);
@@ -352,6 +370,7 @@ SolverProgram souper::makeInternalSolverProgram(int MainPtr(int argc,
       for (unsigned fd = 3; fd != rlim.rlim_cur; ++fd) {
         close(fd);
       }
+#endif
 
       std::vector<const char *> ArgPtrs;
       ArgPtrs.push_back("solver");
