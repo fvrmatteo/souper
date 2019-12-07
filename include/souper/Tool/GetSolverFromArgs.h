@@ -44,7 +44,7 @@ static llvm::cl::opt<bool> KeepSolverInputs(
     "keep-solver-inputs", llvm::cl::desc("Do not clean up solver inputs"),
     llvm::cl::init(false));
 
-static std::unique_ptr<SMTLIBSolver> GetUnderlyingSolverFromArgs() {
+std::unique_ptr<SMTLIBSolver> GetUnderlyingSolverFromArgs() {
   if (!BoolectorPath.empty()) {
     return createBoolectorSolver(makeExternalSolverProgram(BoolectorPath),
                                  KeepSolverInputs);

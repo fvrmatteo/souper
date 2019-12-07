@@ -603,7 +603,7 @@ static struct Register {
   }
 } X;
 
-static void registerSouperPass(
+void registerSouperPass(
     const llvm::PassManagerBuilder &Builder, llvm::legacy::PassManagerBase &PM) {
   PM.add(new SouperPass);
 }
