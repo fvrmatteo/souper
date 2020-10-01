@@ -14,10 +14,13 @@
 
 #include "souper/Extractor/Candidates.h"
 
+#include "souper/Inst/Inst.h"
+#include "souper/Util/UniqueNameSet.h"
 #include "llvm/ADT/EquivalenceClasses.h"
 #include "llvm/Analysis/LazyValueInfo.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/ScalarEvolution.h"
+#include "llvm/Analysis/ValueTracking.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/ConstantRange.h"
 #include "llvm/IR/Constants.h"
@@ -25,59 +28,63 @@
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Intrinsics.h"
+#include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Type.h"
-#include "llvm/IR/LegacyPassManager.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/KnownBits.h"
-#include "souper/Inst/Inst.h"
-#include "souper/Util/UniqueNameSet.h"
 #include <map>
 #include <memory>
 #include <sstream>
-#include <unordered_set>
 #include <tuple>
-#include "llvm/Analysis/ValueTracking.h"
+#include <unordered_set>
 
-static llvm::cl::opt<bool> ExploitBPCs(
-    "souper-exploit-blockpcs",
-    llvm::cl::desc("Exploit block path conditions (default=false)"),
-    llvm::cl::init(false));
+static llvm::cl::opt<bool>
+    ExploitBPCs("souper-exploit-blockpcs",
+                llvm::cl::desc("Exploit block path conditions (default=false)"),
+                llvm::cl::init(false));
 static llvm::cl::opt<bool> HarvestDataFlowFacts(
     "souper-harvest-dataflow-facts",
     llvm::cl::desc("Perform data flow analysis (default=true)"),
     llvm::cl::init(true));
-static llvm::cl::opt<bool> HarvestUses(
-    "souper-harvest-uses",
-    llvm::cl::desc("Harvest operands (default=false)"),
-    llvm::cl::init(false));
-static llvm::cl::opt<bool> PrintNegAtReturn(
-    "print-neg-at-return",
-    llvm::cl::desc("Print negative dfa in each value returned from a function (default=false)"),
-    llvm::cl::init(false));
+static llvm::cl::opt<bool>
+    HarvestUses("souper-harvest-uses",
+                llvm::cl::desc("Harvest operands (default=false)"),
+                llvm::cl::init(false));
+static llvm::cl::opt<bool>
+    PrintNegAtReturn("print-neg-at-return",
+                     llvm::cl::desc("Print negative dfa in each value returned "
+                                    "from a function (default=false)"),
+                     llvm::cl::init(false));
 static llvm::cl::opt<bool> PrintNonNegAtReturn(
     "print-nonneg-at-return",
-    llvm::cl::desc("Print non-negative dfa in each value returned from a function (default=false)"),
+    llvm::cl::desc("Print non-negative dfa in each value returned from a "
+                   "function (default=false)"),
     llvm::cl::init(false));
-static llvm::cl::opt<bool> PrintKnownAtReturn(
-    "print-known-at-return",
-    llvm::cl::desc("Print known bits in each value returned from a function (default=false)"),
-    llvm::cl::init(false));
+static llvm::cl::opt<bool>
+    PrintKnownAtReturn("print-known-at-return",
+                       llvm::cl::desc("Print known bits in each value returned "
+                                      "from a function (default=false)"),
+                       llvm::cl::init(false));
 static llvm::cl::opt<bool> PrintPowerTwoAtReturn(
     "print-power-two-at-return",
-    llvm::cl::desc("Print power two dfa in each value returned from a function (default=false)"),
+    llvm::cl::desc("Print power two dfa in each value returned from a function "
+                   "(default=false)"),
     llvm::cl::init(false));
 static llvm::cl::opt<bool> PrintNonZeroAtReturn(
     "print-non-zero-at-return",
-    llvm::cl::desc("Print non zero dfa in each value returned from a function (default=false)"),
+    llvm::cl::desc("Print non zero dfa in each value returned from a function "
+                   "(default=false)"),
     llvm::cl::init(false));
 static llvm::cl::opt<bool> PrintSignBitsAtReturn(
     "print-sign-bits-at-return",
-    llvm::cl::desc("Print sign bits dfa in each value returned from a function (default=false)"),
+    llvm::cl::desc("Print sign bits dfa in each value returned from a function "
+                   "(default=false)"),
     llvm::cl::init(false));
 static llvm::cl::opt<bool> PrintRangeAtReturn(
     "print-range-at-return",
-    llvm::cl::desc("Print range inforation in each value returned from a function (default=false)"),
+    llvm::cl::desc("Print range inforation in each value returned from a "
+                   "function (default=false)"),
     llvm::cl::init(false));
 static llvm::cl::opt<bool> PrintDemandedBitsAtReturn(
     "print-demanded-bits-from-harvester",
@@ -92,13 +99,13 @@ using namespace souper;
 // LLVM removes this API from version 9, this function is copied from LLVM 8
 llvm::APInt souper::getSetSize(const llvm::ConstantRange &R) {
   if (R.isFullSet()) {
-    APInt Size(R.getBitWidth()+1, 0);
+    APInt Size(R.getBitWidth() + 1, 0);
     Size.setBit(R.getBitWidth());
     return Size;
   }
 
   // This is also correct for wrapped sets.
-  return (R.getUpper() - R.getLower()).zext(R.getBitWidth()+1);
+  return (R.getUpper() - R.getLower()).zext(R.getBitWidth() + 1);
 }
 
 void CandidateReplacement::printFunction(llvm::raw_ostream &Out) const {
@@ -129,9 +136,9 @@ namespace {
 struct ExprBuilder {
   ExprBuilder(const ExprBuilderOptions &Opts, Module *M, const LoopInfo *LI,
               DemandedBits *DB, LazyValueInfo *LVI, ScalarEvolution *SE,
-              TargetLibraryInfo * TLI, InstContext &IC,
-              ExprBuilderContext &EBC)
-    : Opts(Opts), DL(M->getDataLayout()), LI(LI), DB(DB), LVI(LVI), SE(SE), TLI(TLI), IC(IC), EBC(EBC) {}
+              TargetLibraryInfo *TLI, InstContext &IC, ExprBuilderContext &EBC)
+      : Opts(Opts), DL(M->getDataLayout()), LI(LI), DB(DB), LVI(LVI), SE(SE),
+        TLI(TLI), IC(IC), EBC(EBC) {}
 
   const ExprBuilderOptions &Opts;
   const DataLayout &DL;
@@ -143,8 +150,7 @@ struct ExprBuilder {
   InstContext &IC;
   ExprBuilderContext &EBC;
 
-  void checkIrreducibleCFG(BasicBlock *BB,
-                           BasicBlock *FirstBB,
+  void checkIrreducibleCFG(BasicBlock *BB, BasicBlock *FirstBB,
                            std::unordered_set<const BasicBlock *> &VisitedBBs,
                            bool &Loop);
   bool isLoopEntryPoint(PHINode *Phi);
@@ -163,26 +169,22 @@ struct ExprBuilder {
   void markExternalUses(Inst *I);
 };
 
-}
+} // namespace
 
 // Use DFS to detect a possible loop, most likely an loop in an irreducible
 // CFG. One of the headers of the loop is the FirstBB.
 // Loop is set to true upon successfully detecting such a loop.
-void ExprBuilder::checkIrreducibleCFG(BasicBlock *BB,
-                    BasicBlock *FirstBB,
-                    std::unordered_set<const BasicBlock *> &VisitedBBs,
-                    bool &Loop) {
+void ExprBuilder::checkIrreducibleCFG(
+    BasicBlock *BB, BasicBlock *FirstBB,
+    std::unordered_set<const BasicBlock *> &VisitedBBs, bool &Loop) {
   VisitedBBs.insert(BB);
-  for (succ_iterator PI = succ_begin(BB), E = succ_end(BB);
-       PI != E; ++PI) {
+  for (succ_iterator PI = succ_begin(BB), E = succ_end(BB); PI != E; ++PI) {
     BasicBlock *Succ = *PI;
     if (Succ == FirstBB) {
       Loop = true;
-    }
-    else if (VisitedBBs.count(Succ)) {
+    } else if (VisitedBBs.count(Succ)) {
       continue;
-    }
-    else {
+    } else {
       checkIrreducibleCFG(Succ, FirstBB, VisitedBBs, Loop);
     }
     if (Loop)
@@ -244,8 +246,8 @@ Inst *ExprBuilder::makeArrayRead(Value *V) {
     }
   }
 
-  return IC.createVar(Width, Name, Range, Known.Zero, Known.One, NonZero, NonNegative,
-                      PowOfTwo, Negative, NumSignBits, 0);
+  return IC.createVar(Width, Name, Range, Known.Zero, Known.One, NonZero,
+                      NonNegative, PowOfTwo, Negative, NumSignBits, 0);
 }
 
 Inst *ExprBuilder::buildConstant(Constant *c) {
@@ -269,15 +271,14 @@ Inst *ExprBuilder::buildGEP(Inst *Ptr, gep_type_iterator begin,
     if (StructType *ST = i.getStructTypeOrNull()) {
       const StructLayout *SL = DL.getStructLayout(ST);
       ConstantInt *CI = cast<ConstantInt>(i.getOperand());
-      uint64_t Addend = SL->getElementOffset((unsigned) CI->getZExtValue());
+      uint64_t Addend = SL->getElementOffset((unsigned)CI->getZExtValue());
       if (Addend != 0) {
         Ptr = IC.getInst(Inst::Add, PSize,
                          {Ptr, IC.getConst(APInt(PSize, Addend))});
       }
     } else {
       SequentialType *SET = cast<SequentialType>(i.getIndexedType());
-      uint64_t ElementSize =
-        DL.getTypeStoreSize(SET->getElementType());
+      uint64_t ElementSize = DL.getTypeStoreSize(SET->getElementType());
       Value *Operand = i.getOperand();
       Inst *Index = get(Operand);
       if (PSize > Index->Width)
@@ -290,17 +291,17 @@ Inst *ExprBuilder::buildGEP(Inst *Ptr, gep_type_iterator begin,
   return Ptr;
 }
 
-void ExprBuilder::markExternalUses (Inst *I) {
+void ExprBuilder::markExternalUses(Inst *I) {
   std::map<Inst *, unsigned> UsesCount;
   std::unordered_set<Inst *> Visited;
   std::vector<Inst *> Stack;
   Stack.push_back(I);
-  while(!Stack.empty()) {
-    Inst* T = Stack.back();
+  while (!Stack.empty()) {
+    Inst *T = Stack.back();
     Stack.pop_back();
-    for (auto Op: T->Ops) {
-      if (Op->K != Inst::Const && Op->K != Inst::Var
-          && Op->K != Inst::UntypedConst && Op->K != Inst::Phi) {
+    for (auto Op : T->Ops) {
+      if (Op->K != Inst::Const && Op->K != Inst::Var &&
+          Op->K != Inst::UntypedConst && Op->K != Inst::Phi) {
 
         if (UsesCount.find(Op) == UsesCount.end())
           UsesCount[Op] = 1;
@@ -334,28 +335,28 @@ Inst *ExprBuilder::buildHelper(Value *V) {
 
     Inst *L = get(ICI->getOperand(0)), *R = get(ICI->getOperand(1));
     switch (ICI->getPredicate()) {
-      case ICmpInst::ICMP_EQ:
-        return IC.getInst(Inst::Eq, 1, {L, R});
-      case ICmpInst::ICMP_NE:
-        return IC.getInst(Inst::Ne, 1, {L, R});
-      case ICmpInst::ICMP_UGT:
-        return IC.getInst(Inst::Ult, 1, {R, L});
-      case ICmpInst::ICMP_UGE:
-        return IC.getInst(Inst::Ule, 1, {R, L});
-      case ICmpInst::ICMP_ULT:
-        return IC.getInst(Inst::Ult, 1, {L, R});
-      case ICmpInst::ICMP_ULE:
-        return IC.getInst(Inst::Ule, 1, {L, R});
-      case ICmpInst::ICMP_SGT:
-        return IC.getInst(Inst::Slt, 1, {R, L});
-      case ICmpInst::ICMP_SGE:
-        return IC.getInst(Inst::Sle, 1, {R, L});
-      case ICmpInst::ICMP_SLT:
-        return IC.getInst(Inst::Slt, 1, {L, R});
-      case ICmpInst::ICMP_SLE:
-        return IC.getInst(Inst::Sle, 1, {L, R});
-      default:
-        llvm_unreachable("not ICmp");
+    case ICmpInst::ICMP_EQ:
+      return IC.getInst(Inst::Eq, 1, {L, R});
+    case ICmpInst::ICMP_NE:
+      return IC.getInst(Inst::Ne, 1, {L, R});
+    case ICmpInst::ICMP_UGT:
+      return IC.getInst(Inst::Ult, 1, {R, L});
+    case ICmpInst::ICMP_UGE:
+      return IC.getInst(Inst::Ule, 1, {R, L});
+    case ICmpInst::ICMP_ULT:
+      return IC.getInst(Inst::Ult, 1, {L, R});
+    case ICmpInst::ICMP_ULE:
+      return IC.getInst(Inst::Ule, 1, {L, R});
+    case ICmpInst::ICMP_SGT:
+      return IC.getInst(Inst::Slt, 1, {R, L});
+    case ICmpInst::ICMP_SGE:
+      return IC.getInst(Inst::Sle, 1, {R, L});
+    case ICmpInst::ICMP_SLT:
+      return IC.getInst(Inst::Slt, 1, {L, R});
+    case ICmpInst::ICMP_SLE:
+      return IC.getInst(Inst::Sle, 1, {L, R});
+    default:
+      llvm_unreachable("not ICmp");
     }
   } else if (auto BO = dyn_cast<BinaryOperator>(V)) {
     if (!isa<IntegerType>(BO->getType()))
@@ -364,87 +365,87 @@ Inst *ExprBuilder::buildHelper(Value *V) {
     Inst *L = get(BO->getOperand(0)), *R = get(BO->getOperand(1));
     Inst::Kind K;
     switch (BO->getOpcode()) {
-      case Instruction::Add:
-        if (BO->hasNoSignedWrap() && BO->hasNoUnsignedWrap())
-          K = Inst::AddNW;
-        else if (BO->hasNoSignedWrap())
-          K = Inst::AddNSW;
-        else if (BO->hasNoUnsignedWrap())
-          K = Inst::AddNUW;
-        else
-          K = Inst::Add;
-        break;
-      case Instruction::Sub:
-        if (BO->hasNoSignedWrap() && BO->hasNoUnsignedWrap())
-          K = Inst::SubNW;
-        else if (BO->hasNoSignedWrap())
-          K = Inst::SubNSW;
-        else if (BO->hasNoUnsignedWrap())
-          K = Inst::SubNUW;
-        else
-          K = Inst::Sub;
-        break;
-      case Instruction::Mul:
-        if (BO->hasNoSignedWrap() && BO->hasNoUnsignedWrap())
-          K = Inst::MulNW;
-        else if (BO->hasNoSignedWrap())
-          K = Inst::MulNSW;
-        else if (BO->hasNoUnsignedWrap())
-          K = Inst::MulNUW;
-        else
-          K = Inst::Mul;
-        break;
-      case Instruction::UDiv:
-        if (BO->isExact())
-          K = Inst::UDivExact;
-        else
-          K = Inst::UDiv;
-        break;
-      case Instruction::SDiv:
-        if (BO->isExact())
-          K = Inst::SDivExact;
-        else
-          K = Inst::SDiv;
-        break;
-      case Instruction::URem:
-        K = Inst::URem;
-        break;
-      case Instruction::SRem:
-        K = Inst::SRem;
-        break;
-      case Instruction::And:
-        K = Inst::And;
-        break;
-      case Instruction::Or:
-        K = Inst::Or;
-        break;
-      case Instruction::Xor:
-        K = Inst::Xor;
-        break;
-      case Instruction::Shl:
-        if (BO->hasNoSignedWrap() && BO->hasNoUnsignedWrap())
-          K = Inst::ShlNW;
-        else if (BO->hasNoSignedWrap())
-          K = Inst::ShlNSW;
-        else if (BO->hasNoUnsignedWrap())
-          K = Inst::ShlNUW;
-        else
-          K = Inst::Shl;
-        break;
-      case Instruction::LShr:
-        if (BO->isExact())
-          K = Inst::LShrExact;
-        else
-          K = Inst::LShr;
-        break;
-      case Instruction::AShr:
-        if (BO->isExact())
-          K = Inst::AShrExact;
-        else
-          K = Inst::AShr;
-        break;
-      default:
-        llvm_unreachable("not BinOp");
+    case Instruction::Add:
+      if (BO->hasNoSignedWrap() && BO->hasNoUnsignedWrap())
+        K = Inst::AddNW;
+      else if (BO->hasNoSignedWrap())
+        K = Inst::AddNSW;
+      else if (BO->hasNoUnsignedWrap())
+        K = Inst::AddNUW;
+      else
+        K = Inst::Add;
+      break;
+    case Instruction::Sub:
+      if (BO->hasNoSignedWrap() && BO->hasNoUnsignedWrap())
+        K = Inst::SubNW;
+      else if (BO->hasNoSignedWrap())
+        K = Inst::SubNSW;
+      else if (BO->hasNoUnsignedWrap())
+        K = Inst::SubNUW;
+      else
+        K = Inst::Sub;
+      break;
+    case Instruction::Mul:
+      if (BO->hasNoSignedWrap() && BO->hasNoUnsignedWrap())
+        K = Inst::MulNW;
+      else if (BO->hasNoSignedWrap())
+        K = Inst::MulNSW;
+      else if (BO->hasNoUnsignedWrap())
+        K = Inst::MulNUW;
+      else
+        K = Inst::Mul;
+      break;
+    case Instruction::UDiv:
+      if (BO->isExact())
+        K = Inst::UDivExact;
+      else
+        K = Inst::UDiv;
+      break;
+    case Instruction::SDiv:
+      if (BO->isExact())
+        K = Inst::SDivExact;
+      else
+        K = Inst::SDiv;
+      break;
+    case Instruction::URem:
+      K = Inst::URem;
+      break;
+    case Instruction::SRem:
+      K = Inst::SRem;
+      break;
+    case Instruction::And:
+      K = Inst::And;
+      break;
+    case Instruction::Or:
+      K = Inst::Or;
+      break;
+    case Instruction::Xor:
+      K = Inst::Xor;
+      break;
+    case Instruction::Shl:
+      if (BO->hasNoSignedWrap() && BO->hasNoUnsignedWrap())
+        K = Inst::ShlNW;
+      else if (BO->hasNoSignedWrap())
+        K = Inst::ShlNSW;
+      else if (BO->hasNoUnsignedWrap())
+        K = Inst::ShlNUW;
+      else
+        K = Inst::Shl;
+      break;
+    case Instruction::LShr:
+      if (BO->isExact())
+        K = Inst::LShrExact;
+      else
+        K = Inst::LShr;
+      break;
+    case Instruction::AShr:
+      if (BO->isExact())
+        K = Inst::AShrExact;
+      else
+        K = Inst::AShr;
+      break;
+    default:
+      llvm_unreachable("not BinOp");
     }
     return IC.getInst(K, L->Width, {L, R});
   } else if (auto Sel = dyn_cast<SelectInst>(V)) {
@@ -485,14 +486,24 @@ Inst *ExprBuilder::buildHelper(Value *V) {
         break; // could be a vector operation
       return IC.getInst(Inst::Trunc, DestSize, {Op});
 
-    default:
-      ; // fallthrough to return below
+    default:; // fallthrough to return below
     }
   } else if (auto GEP = dyn_cast<GetElementPtrInst>(V)) {
+    // SATURN: Check if we read from a constant
+    if (isa<ConstantInt>(GEP->getOperand(2))) {
+      auto GV_RAM =
+          GEP->getParent()->getParent()->getParent()->getGlobalVariable("RAM");
+      if (GV_RAM && GEP->getOperand(0) == GV_RAM) {
+        Inst *Const = get(GEP->getOperand(2));
+        return Const;
+      }
+    }
+    // SATURN done
+
     if (isa<VectorType>(GEP->getType()))
       return makeArrayRead(V); // vector operation
     // TODO: replace with a GEP instruction
-    //return buildGEP(get(GEP->getOperand(0)), gep_type_begin(GEP),
+    // return buildGEP(get(GEP->getOperand(0)), gep_type_begin(GEP),
     //                gep_type_end(GEP));
     return makeArrayRead(V);
   } else if (auto Phi = dyn_cast<PHINode>(V)) {
@@ -529,100 +540,120 @@ Inst *ExprBuilder::buildHelper(Value *V) {
     // create a var.
     Inst *R = IC.getConst(APInt(32, Idx[0]));
     switch (L->K) {
-      default:
-        return makeArrayRead(V);
-      case Inst::SAddWithOverflow:
-      case Inst::UAddWithOverflow:
-      case Inst::SSubWithOverflow:
-      case Inst::USubWithOverflow:
-      case Inst::SMulWithOverflow:
-      case Inst::UMulWithOverflow: {
-        unsigned WidthExtracted = L->Ops[Idx[0]]->Width;
-        return IC.getInst(Inst::ExtractValue, WidthExtracted, {L, R});
-      }
+    default:
+      return makeArrayRead(V);
+    case Inst::SAddWithOverflow:
+    case Inst::UAddWithOverflow:
+    case Inst::SSubWithOverflow:
+    case Inst::USubWithOverflow:
+    case Inst::SMulWithOverflow:
+    case Inst::UMulWithOverflow: {
+      unsigned WidthExtracted = L->Ops[Idx[0]]->Width;
+      return IC.getInst(Inst::ExtractValue, WidthExtracted, {L, R});
+    }
     }
   } else if (auto Call = dyn_cast<CallInst>(V)) {
     LibFunc Func;
     if (auto II = dyn_cast<IntrinsicInst>(Call)) {
       Inst *L = get(II->getOperand(0));
       Inst *R = nullptr;
-      if(II->getNumOperands() > 1) R = get(II->getOperand(1));
+      if (II->getNumOperands() > 1)
+        R = get(II->getOperand(1));
       switch (II->getIntrinsicID()) {
-        default:
-          break;
-        case Intrinsic::ctpop:
-          return IC.getInst(Inst::CtPop, L->Width, {L});
-        case Intrinsic::bswap:
-          return IC.getInst(Inst::BSwap, L->Width, {L});
-        case Intrinsic::bitreverse:
-          return IC.getInst(Inst::BitReverse, L->Width, {L});
-        case Intrinsic::cttz:
-          return IC.getInst(Inst::Cttz, L->Width, {L});
-        case Intrinsic::ctlz:
-          return IC.getInst(Inst::Ctlz, L->Width, {L});
-        case Intrinsic::fshl:
-        case Intrinsic::fshr: {
-          Inst *ShAmt = get(II->getOperand(2));
-          Inst::Kind K =
-              II->getIntrinsicID() == Intrinsic::fshl ? Inst::FShl : Inst::FShr;
-          return IC.getInst(K, L->Width, {/*High=*/L, /*Low=*/R, ShAmt});
-        }
-        case Intrinsic::sadd_with_overflow: {
-          Inst *Add = IC.getInst(Inst::Add, L->Width, {L, R}, /*Available=*/false);
-          Inst *Overflow = IC.getInst(Inst::SAddO, 1, {L, R}, /*Available=*/false);
-          return IC.getInst(Inst::SAddWithOverflow, L->Width+1, {Add, Overflow});
-        }
-        case Intrinsic::uadd_with_overflow: {
-          Inst *Add = IC.getInst(Inst::Add, L->Width, {L, R}, /*Available=*/false);
-          Inst *Overflow = IC.getInst(Inst::UAddO, 1, {L, R}, /*Available=*/false);
-          return IC.getInst(Inst::UAddWithOverflow, L->Width+1, {Add, Overflow});
-        }
-        case Intrinsic::ssub_with_overflow: {
-          Inst *Sub = IC.getInst(Inst::Sub, L->Width, {L, R}, /*Available=*/false);
-          Inst *Overflow = IC.getInst(Inst::SSubO, 1, {L, R}, /*Available=*/false);
-          return IC.getInst(Inst::SSubWithOverflow, L->Width+1, {Sub, Overflow});
-        }
-        case Intrinsic::usub_with_overflow: {
-          Inst *Sub = IC.getInst(Inst::Sub, L->Width, {L, R}, /*Available=*/false);
-          Inst *Overflow = IC.getInst(Inst::USubO, 1, {L, R}, /*Available=*/false);
-          return IC.getInst(Inst::USubWithOverflow, L->Width+1, {Sub, Overflow});
-        }
-        case Intrinsic::smul_with_overflow: {
-          Inst *Mul = IC.getInst(Inst::Mul, L->Width, {L, R}, /*Available=*/false);
-          Inst *Overflow = IC.getInst(Inst::SMulO, 1, {L, R}, /*Available=*/false);
-          return IC.getInst(Inst::SMulWithOverflow, L->Width+1, {Mul, Overflow});
-        }
-        case Intrinsic::umul_with_overflow: {
-          Inst *Mul = IC.getInst(Inst::Mul, L->Width, {L, R}, /*Available=*/false);
-          Inst *Overflow = IC.getInst(Inst::UMulO, 1, {L, R}, /*Available=*/false);
-          return IC.getInst(Inst::UMulWithOverflow, L->Width+1, {Mul, Overflow});
-        }
-        case Intrinsic::sadd_sat: {
-          return IC.getInst(Inst::SAddSat, L->Width, {L, R});
-        }
-        case Intrinsic::uadd_sat: {
-          return IC.getInst(Inst::UAddSat, L->Width, {L, R});
-        }
-        case Intrinsic::ssub_sat: {
-          return IC.getInst(Inst::SSubSat, L->Width, {L, R});
-        }
-        case Intrinsic::usub_sat: {
-          return IC.getInst(Inst::USubSat, L->Width, {L, R});
-        }
+      default:
+        break;
+      case Intrinsic::ctpop:
+        return IC.getInst(Inst::CtPop, L->Width, {L});
+      case Intrinsic::bswap:
+        return IC.getInst(Inst::BSwap, L->Width, {L});
+      case Intrinsic::bitreverse:
+        return IC.getInst(Inst::BitReverse, L->Width, {L});
+      case Intrinsic::cttz:
+        return IC.getInst(Inst::Cttz, L->Width, {L});
+      case Intrinsic::ctlz:
+        return IC.getInst(Inst::Ctlz, L->Width, {L});
+      case Intrinsic::fshl:
+      case Intrinsic::fshr: {
+        Inst *ShAmt = get(II->getOperand(2));
+        Inst::Kind K =
+            II->getIntrinsicID() == Intrinsic::fshl ? Inst::FShl : Inst::FShr;
+        return IC.getInst(K, L->Width, {/*High=*/L, /*Low=*/R, ShAmt});
+      }
+      case Intrinsic::sadd_with_overflow: {
+        Inst *Add =
+            IC.getInst(Inst::Add, L->Width, {L, R}, /*Available=*/false);
+        Inst *Overflow =
+            IC.getInst(Inst::SAddO, 1, {L, R}, /*Available=*/false);
+        return IC.getInst(Inst::SAddWithOverflow, L->Width + 1,
+                          {Add, Overflow});
+      }
+      case Intrinsic::uadd_with_overflow: {
+        Inst *Add =
+            IC.getInst(Inst::Add, L->Width, {L, R}, /*Available=*/false);
+        Inst *Overflow =
+            IC.getInst(Inst::UAddO, 1, {L, R}, /*Available=*/false);
+        return IC.getInst(Inst::UAddWithOverflow, L->Width + 1,
+                          {Add, Overflow});
+      }
+      case Intrinsic::ssub_with_overflow: {
+        Inst *Sub =
+            IC.getInst(Inst::Sub, L->Width, {L, R}, /*Available=*/false);
+        Inst *Overflow =
+            IC.getInst(Inst::SSubO, 1, {L, R}, /*Available=*/false);
+        return IC.getInst(Inst::SSubWithOverflow, L->Width + 1,
+                          {Sub, Overflow});
+      }
+      case Intrinsic::usub_with_overflow: {
+        Inst *Sub =
+            IC.getInst(Inst::Sub, L->Width, {L, R}, /*Available=*/false);
+        Inst *Overflow =
+            IC.getInst(Inst::USubO, 1, {L, R}, /*Available=*/false);
+        return IC.getInst(Inst::USubWithOverflow, L->Width + 1,
+                          {Sub, Overflow});
+      }
+      case Intrinsic::smul_with_overflow: {
+        Inst *Mul =
+            IC.getInst(Inst::Mul, L->Width, {L, R}, /*Available=*/false);
+        Inst *Overflow =
+            IC.getInst(Inst::SMulO, 1, {L, R}, /*Available=*/false);
+        return IC.getInst(Inst::SMulWithOverflow, L->Width + 1,
+                          {Mul, Overflow});
+      }
+      case Intrinsic::umul_with_overflow: {
+        Inst *Mul =
+            IC.getInst(Inst::Mul, L->Width, {L, R}, /*Available=*/false);
+        Inst *Overflow =
+            IC.getInst(Inst::UMulO, 1, {L, R}, /*Available=*/false);
+        return IC.getInst(Inst::UMulWithOverflow, L->Width + 1,
+                          {Mul, Overflow});
+      }
+      case Intrinsic::sadd_sat: {
+        return IC.getInst(Inst::SAddSat, L->Width, {L, R});
+      }
+      case Intrinsic::uadd_sat: {
+        return IC.getInst(Inst::UAddSat, L->Width, {L, R});
+      }
+      case Intrinsic::ssub_sat: {
+        return IC.getInst(Inst::SSubSat, L->Width, {L, R});
+      }
+      case Intrinsic::usub_sat: {
+        return IC.getInst(Inst::USubSat, L->Width, {L, R});
+      }
       }
     } else {
-      Function* F = Call->getCalledFunction();
-      if(F && TLI->getLibFunc(*F, Func) && TLI->has(Func)) {
+      Function *F = Call->getCalledFunction();
+      if (F && TLI->getLibFunc(*F, Func) && TLI->has(Func)) {
         switch (Func) {
-          case LibFunc_abs: {
-            Inst *A = get(Call->getOperand(0));
-            Inst *Z = IC.getConst(APInt(A->Width, 0));
-            Inst *NegA = IC.getInst(Inst::SubNSW, A->Width, {Z, A}, /*Available=*/false);
-            Inst *Cmp = IC.getInst(Inst::Slt, 1, {Z, A}, /*Available=*/false);
-            return IC.getInst(Inst::Select, A->Width, {Cmp, A, NegA});
-          }
-          default:
-            break;
+        case LibFunc_abs: {
+          Inst *A = get(Call->getOperand(0));
+          Inst *Z = IC.getConst(APInt(A->Width, 0));
+          Inst *NegA =
+              IC.getInst(Inst::SubNSW, A->Width, {Z, A}, /*Available=*/false);
+          Inst *Cmp = IC.getInst(Inst::Slt, 1, {Z, A}, /*Available=*/false);
+          return IC.getInst(Inst::Select, A->Width, {Cmp, A, NegA});
+        }
+        default:
+          break;
         }
       }
     }
@@ -675,9 +706,8 @@ void ExprBuilder::addPC(BasicBlock *BB, BasicBlock *Pred,
                         std::vector<InstMapping> &PCs) {
   if (auto Branch = dyn_cast<BranchInst>(Pred->getTerminator())) {
     if (Branch->isConditional()) {
-      emplace_back_dedup(
-          PCs, get(Branch->getCondition()),
-          IC.getConst(APInt(1, Branch->getSuccessor(0) == BB)));
+      emplace_back_dedup(PCs, get(Branch->getCondition()),
+                         IC.getConst(APInt(1, Branch->getSuccessor(0) == BB)));
     }
   } else if (auto Switch = dyn_cast<SwitchInst>(Pred->getTerminator())) {
     Inst *Cond = get(Switch->getCondition());
@@ -687,8 +717,7 @@ void ExprBuilder::addPC(BasicBlock *BB, BasicBlock *Pred,
     } else {
       // default
       Inst *DI = IC.getConst(APInt(1, true));
-      for (auto I = Switch->case_begin(), E = Switch->case_end(); I != E;
-           ++I) {
+      for (auto I = Switch->case_begin(), E = Switch->case_end(); I != E; ++I) {
         Inst *CI = IC.getInst(Inst::Ne, 1, {Cond, get(I->getCaseValue())});
         emplace_back_dedup(PCs, CI, DI);
       }
@@ -828,8 +857,7 @@ std::vector<Inst *> AddPCSets(const std::vector<InstMapping> &PCs,
   std::vector<Inst *> PCSets(PCs.size());
   for (unsigned i = 0; i != PCs.size(); ++i) {
     llvm::DenseSet<Inst *> SeenInsts;
-    auto PCLeader =
-        AddVarSet(Vars.member_end(), Vars, SeenInsts, PCs[i].LHS);
+    auto PCLeader = AddVarSet(Vars.member_end(), Vars, SeenInsts, PCs[i].LHS);
     if (PCLeader != Vars.member_end())
       PCSets[i] = *PCLeader;
   }
@@ -852,10 +880,11 @@ std::vector<Inst *> AddBlockPCSets(const BlockPCs &BPCs, InstClasses &Vars) {
 
 // Return vectors of relevant BlockPCs and PCs for a candidate, namely those
 // whose variable sets are in the same equivalence class as the candidate's.
-std::tuple<BlockPCs, std::vector<InstMapping>> GetRelevantPCs(
-    const BlockPCs &BPCs, const std::vector<InstMapping> &PCs,
-    const std::vector<Inst *> &BPCSets, const std::vector<Inst *> &PCSets,
-    InstClasses Vars, InstMapping Cand) {
+std::tuple<BlockPCs, std::vector<InstMapping>>
+GetRelevantPCs(const BlockPCs &BPCs, const std::vector<InstMapping> &PCs,
+               const std::vector<Inst *> &BPCSets,
+               const std::vector<Inst *> &PCSets, InstClasses Vars,
+               InstMapping Cand) {
 
   llvm::DenseSet<Inst *> SeenInsts;
   auto Leader = AddVarSet(Vars.member_end(), Vars, SeenInsts, Cand.LHS);
@@ -874,9 +903,7 @@ std::tuple<BlockPCs, std::vector<InstMapping>> GetRelevantPCs(
   return std::make_tuple(RelevantBPCs, RelevantPCs);
 }
 
-std::string convertBoolToStr(bool b) {
-  return b ? "true" : "false";
-}
+std::string convertBoolToStr(bool b) { return b ? "true" : "false"; }
 
 void PrintDataflowInfo(Function &F, Instruction &I, LazyValueInfo *LVI,
                        ScalarEvolution *SE) {
@@ -930,7 +957,8 @@ void PrintDataflowInfo(Function &F, Instruction &I, LazyValueInfo *LVI,
       }
     }
     llvm::outs() << "range from compiler: [" << Range.getLower() << ","
-                 << Range.getUpper() << ")" << "\n";
+                 << Range.getUpper() << ")"
+                 << "\n";
   }
 }
 
@@ -945,6 +973,11 @@ void ExtractExprCandidates(Function &F, const LoopInfo *LI, DemandedBits *DB,
   for (auto &BB : F) {
     std::unique_ptr<BlockCandidateSet> BCS(new BlockCandidateSet);
     for (auto &I : BB) {
+      // SATURN filter candidates
+      if (Opts.CandidateFilterInstruction &&
+          Opts.CandidateFilterInstruction != &I)
+        continue;
+
       if (isa<ReturnInst>(I))
         PrintDataflowInfo(F, I, LVI, SE);
 
@@ -962,10 +995,10 @@ void ExtractExprCandidates(Function &F, const LoopInfo *LI, DemandedBits *DB,
             if (auto ConstZeroOp = dyn_cast<ConstantInt>(BO->getOperand(1))) {
               if (ConstZeroOp->isZero()) {
                 APInt DemandedBitsVal = DB->getDemandedBits(&I);
-                llvm::outs() << "demanded-bits from compiler for "
-                             << I.getName() << " : "
-                             << Inst::getDemandedBitsString(DemandedBitsVal)
-                             << "\n";
+                llvm::outs()
+                    << "demanded-bits from compiler for " << I.getName()
+                    << " : " << Inst::getDemandedBitsString(DemandedBitsVal)
+                    << "\n";
               }
             }
           }
@@ -977,12 +1010,12 @@ void ExtractExprCandidates(Function &F, const LoopInfo *LI, DemandedBits *DB,
         std::unordered_set<llvm::Instruction *> Visited;
         for (auto &Op : I.operands()) {
           // TODO: support regular values
-          if (auto U = dyn_cast<Instruction>(Op)){
+          if (auto U = dyn_cast<Instruction>(Op)) {
             // If uses are in the same block with its def, give up
             if (U->getParent() == &BB)
               continue;
             if (U->getType()->isIntegerTy()) {
-              if(Visited.insert(U).second) {
+              if (Visited.insert(U).second) {
                 Inst *In = EB.getFromUse(U);
                 In->HarvestKind = HarvestType::HarvestedFromUse;
                 In->HarvestFrom = &BB;
@@ -1011,7 +1044,8 @@ void ExtractExprCandidates(Function &F, const LoopInfo *LI, DemandedBits *DB,
       In->HarvestFrom = nullptr;
       EB.markExternalUses(In);
       BCS->Replacements.emplace_back(&I, InstMapping(In, 0));
-      assert(EB.get(&I)->hasOrigin(&I));
+      // Saturn disabled for test
+      // assert(EB.get(&I)->hasOrigin(&I));
     }
     if (!BCS->Replacements.empty()) {
       std::unordered_set<Block *> VisitedBlocks;
@@ -1022,8 +1056,8 @@ void ExtractExprCandidates(Function &F, const LoopInfo *LI, DemandedBits *DB,
       auto BPCSets = AddBlockPCSets(BCS->BPCs, BPCVars);
 
       for (auto &R : BCS->Replacements) {
-        std::tie(R.BPCs, R.PCs) =
-          GetRelevantPCs(BCS->BPCs, BCS->PCs, BPCSets, PCSets, Vars, R.Mapping);
+        std::tie(R.BPCs, R.PCs) = GetRelevantPCs(BCS->BPCs, BCS->PCs, BPCSets,
+                                                 PCSets, Vars, R.Mapping);
       }
 
       Result.Blocks.emplace_back(std::move(BCS));
@@ -1039,10 +1073,10 @@ class ExtractExprCandidatesPass : public FunctionPass {
   FunctionCandidateSet &Result;
 
 public:
- ExtractExprCandidatesPass(const ExprBuilderOptions &Opts, InstContext &IC,
-                           ExprBuilderContext &EBC,
-                           FunctionCandidateSet &Result)
-     : FunctionPass(ID), Opts(Opts), IC(IC), EBC(EBC), Result(Result) {}
+  ExtractExprCandidatesPass(const ExprBuilderOptions &Opts, InstContext &IC,
+                            ExprBuilderContext &EBC,
+                            FunctionCandidateSet &Result)
+      : FunctionPass(ID), Opts(Opts), IC(IC), EBC(EBC), Result(Result) {}
 
   void getAnalysisUsage(AnalysisUsage &Info) const {
     Info.addRequired<LoopInfoWrapperPass>();
@@ -1054,11 +1088,13 @@ public:
   }
 
   bool runOnFunction(Function &F) {
-    TargetLibraryInfo* TLI = &getAnalysis<TargetLibraryInfoWrapperPass>().getTLI();
+    TargetLibraryInfo *TLI =
+        &getAnalysis<TargetLibraryInfoWrapperPass>().getTLI();
     LoopInfo *LI = &getAnalysis<LoopInfoWrapperPass>().getLoopInfo();
     if (!LI)
       report_fatal_error("getLoopInfo() failed");
-    DemandedBits *DB = &getAnalysis<DemandedBitsWrapperPass>().getDemandedBits();
+    DemandedBits *DB =
+        &getAnalysis<DemandedBitsWrapperPass>().getDemandedBits();
     if (!DB)
       report_fatal_error("getDemandedBits() failed");
     LazyValueInfo *LVI = &getAnalysis<LazyValueInfoWrapperPass>().getLVI();
@@ -1074,7 +1110,7 @@ public:
 
 char ExtractExprCandidatesPass::ID = 0;
 
-}
+} // namespace
 
 FunctionCandidateSet souper::ExtractCandidatesFromPass(
     Function *F, const LoopInfo *LI, DemandedBits *DB, LazyValueInfo *LVI,
