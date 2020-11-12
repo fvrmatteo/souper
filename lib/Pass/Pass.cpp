@@ -14,6 +14,12 @@
 
 #define DEBUG_TYPE "souper"
 
+#include "llvm/Pass.h"
+#include "set"
+#include "souper/KVStore/KVStore.h"
+#include "souper/SMTLIB2/Solver.h"
+#include "souper/Tool/CandidateMapUtils.h"
+#include "souper/Tool/GetSolverFromArgs.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Analysis/DemandedBits.h"
 #include "llvm/Analysis/LazyValueInfo.h"
@@ -23,28 +29,23 @@
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/Function.h"
-#include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/IRBuilder.h"
-#include "llvm/IR/Module.h"
-#include "llvm/InitializePasses.h"
-#include "llvm/Pass.h"
+#include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Verifier.h"
-#include "llvm/Support/raw_ostream.h"
+#include "llvm/InitializePasses.h"
 #include "llvm/Support/CommandLine.h"
-#include "llvm/Transforms/Scalar/DCE.h"
+#include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/IPO/PassManagerBuilder.h"
+#include "llvm/Transforms/Scalar/DCE.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
-#include "souper/KVStore/KVStore.h"
-#include "souper/SMTLIB2/Solver.h"
-#include "souper/Tool/GetSolverFromArgs.h"
-#include "souper/Tool/CandidateMapUtils.h"
-#include "set"
 
-STATISTIC(InstructionReplaced, "Number of instructions replaced by another instruction");
-STATISTIC(DominanceCheckFailed, "Number of failed replacement due to dominance check");
+STATISTIC(InstructionReplaced,
+          "Number of instructions replaced by another instruction");
+STATISTIC(DominanceCheckFailed,
+          "Number of failed replacement due to dominance check");
 
 using namespace souper;
 using namespace llvm;
@@ -54,23 +55,26 @@ std::unique_ptr<Solver> S;
 unsigned ReplacementIdx, ReplacementsDone;
 KVStore *KV;
 
-static cl::opt<unsigned> DebugLevel("souper-debug-level", cl::Hidden,
-     cl::init(1),
-     cl::desc("Control the verbose level of debug output (default=1). "
-     "The larger the number is, the more fine-grained debug "
-     "information will be printed."));
+static cl::opt<unsigned> DebugLevel(
+    "souper-debug-level", cl::Hidden, cl::init(1),
+    cl::desc("Control the verbose level of debug output (default=1). "
+             "The larger the number is, the more fine-grained debug "
+             "information will be printed."));
 
-static cl::opt<bool> DynamicProfile("souper-dynamic-profile", cl::init(false),
+static cl::opt<bool> DynamicProfile(
+    "souper-dynamic-profile", cl::init(false),
     cl::desc("Dynamic profiling of Souper optimizations (default=false)"));
 
-static cl::opt<bool> StaticProfile("souper-static-profile", cl::init(false),
+static cl::opt<bool> StaticProfile(
+    "souper-static-profile", cl::init(false),
     cl::desc("Static profiling of Souper optimizations (default=false)"));
 
-static cl::opt<unsigned> FirstReplace("souper-first-opt", cl::Hidden,
-    cl::init(0),
-    cl::desc("First Souper optimization to perform (default=0)"));
+static cl::opt<unsigned>
+    FirstReplace("souper-first-opt", cl::Hidden, cl::init(0),
+                 cl::desc("First Souper optimization to perform (default=0)"));
 
-static cl::opt<unsigned> LastReplace("souper-last-opt", cl::Hidden,
+static cl::opt<unsigned> LastReplace(
+    "souper-last-opt", cl::Hidden,
     cl::init(std::numeric_limits<unsigned>::max()),
     cl::desc("Last Souper optimization to perform (default=infinite)"));
 
@@ -83,16 +87,18 @@ static const bool DynamicProfileAll = false;
 struct SouperPass : public FunctionPass {
   static char ID;
 
-  Value* getOperand(Inst* I, unsigned index, Instruction *ReplacedInst,
+  Value *getOperand(Inst *I, unsigned index, Instruction *ReplacedInst,
                     ExprBuilderContext &EBC, DominatorTree &DT,
                     std::map<Inst *, Value *> &ReplacedValues,
                     IRBuilder<> &Builder, Module *M) {
     Value *Result = nullptr;
     if (Inst::isOverflowIntrinsicMain(I->K)) {
       assert(I->Ops.size() == 2 && I->Ops[0]->Ops.size() == 2);
-      Result = getValue(I->Ops[0]->Ops[index], ReplacedInst, EBC, DT, ReplacedValues, Builder, M);
+      Result = getValue(I->Ops[0]->Ops[index], ReplacedInst, EBC, DT,
+                        ReplacedValues, Builder, M);
     } else {
-      Result = getValue(I->Ops[index], ReplacedInst, EBC, DT, ReplacedValues, Builder, M);
+      Result = getValue(I->Ops[index], ReplacedInst, EBC, DT, ReplacedValues,
+                        Builder, M);
     }
 
     return Result;
@@ -123,42 +129,40 @@ public:
     llvm::raw_string_ostream Loc(Str);
     Cand.Origin->getDebugLoc().print(Loc);
     ReplacementContext Context;
-    std::string LHS = GetReplacementLHSString(Cand.BPCs, Cand.PCs,
-                                              Cand.Mapping.LHS, Context);
+    std::string LHS =
+        GetReplacementLHSString(Cand.BPCs, Cand.PCs, Cand.Mapping.LHS, Context);
     LLVMContext &C = F->getContext();
     Module *M = F->getParent();
     Function *RegisterFunc = M->getFunction("_souper_profile_register");
     if (!RegisterFunc) {
       Type *RegisterArgs[] = {
-        PointerType::getInt8PtrTy(C),
-        PointerType::getInt8PtrTy(C),
-        PointerType::getInt64PtrTy(C),
+          PointerType::getInt8PtrTy(C),
+          PointerType::getInt8PtrTy(C),
+          PointerType::getInt64PtrTy(C),
       };
-      FunctionType *RegisterType = FunctionType::get(Type::getVoidTy(C),
-                                                     RegisterArgs, false);
+      FunctionType *RegisterType =
+          FunctionType::get(Type::getVoidTy(C), RegisterArgs, false);
       RegisterFunc = Function::Create(RegisterType, Function::ExternalLinkage,
                                       "_souper_profile_register", M);
     }
 
     // todo: should check if this string exists before creating it
     Constant *Repl = ConstantDataArray::getString(C, LHS, true);
-    Constant *ReplVar = new GlobalVariable(*M, Repl->getType(), true,
-        GlobalValue::PrivateLinkage, Repl, "");
-    Constant *ReplPtr = ConstantExpr::getPointerCast(ReplVar,
-        PointerType::getInt8PtrTy(C));
+    Constant *ReplVar = new GlobalVariable(
+        *M, Repl->getType(), true, GlobalValue::PrivateLinkage, Repl, "");
+    Constant *ReplPtr =
+        ConstantExpr::getPointerCast(ReplVar, PointerType::getInt8PtrTy(C));
 
-    Constant *Field = ConstantDataArray::getString(C, "dprofile " + Loc.str(),
-                                                   true);
-    Constant *FieldVar = new GlobalVariable(*M, Field->getType(), true,
-                                            GlobalValue::PrivateLinkage, Field,
-                                            "");
-    Constant *FieldPtr = ConstantExpr::getPointerCast(FieldVar,
-        PointerType::getInt8PtrTy(C));
+    Constant *Field =
+        ConstantDataArray::getString(C, "dprofile " + Loc.str(), true);
+    Constant *FieldVar = new GlobalVariable(
+        *M, Field->getType(), true, GlobalValue::PrivateLinkage, Field, "");
+    Constant *FieldPtr =
+        ConstantExpr::getPointerCast(FieldVar, PointerType::getInt8PtrTy(C));
 
-    Constant *CntVar = new GlobalVariable(*M, Type::getInt64Ty(C), false,
-                                          GlobalValue::PrivateLinkage,
-                                          ConstantInt::get(C, APInt(64, 0)),
-                                          "_souper_profile_cnt");
+    Constant *CntVar = new GlobalVariable(
+        *M, Type::getInt64Ty(C), false, GlobalValue::PrivateLinkage,
+        ConstantInt::get(C, APInt(64, 0)), "_souper_profile_cnt");
 
     FunctionType *CtorType = FunctionType::get(Type::getVoidTy(C), false);
     Function *Ctor = Function::Create(CtorType, GlobalValue::InternalLinkage,
@@ -167,7 +171,7 @@ public:
     BasicBlock *BB = BasicBlock::Create(C, "entry", Ctor);
     IRBuilder<> Builder(BB);
 
-    Value *Args[] = { ReplPtr, FieldPtr, CntVar };
+    Value *Args[] = {ReplPtr, FieldPtr, CntVar};
     Builder.CreateCall(RegisterFunc, Args);
     Builder.CreateRetVoid();
 
@@ -176,14 +180,14 @@ public:
     BasicBlock::iterator BI(Cand.Origin);
     while (isa<PHINode>(*BI))
       ++BI;
-    new AtomicRMWInst(AtomicRMWInst::Add, CntVar,
-                      ConstantInt::get(C, APInt(64, 1)), AtomicOrdering::Monotonic,
-                      SyncScope::System, Cand.Origin);
+    Align A{8};
+    new AtomicRMWInst(
+        AtomicRMWInst::Add, CntVar, ConstantInt::get(C, APInt(64, 1)), A,
+        AtomicOrdering::Monotonic, SyncScope::System, Cand.Origin);
   }
 
-  Value *getValue(Inst *I, Instruction *ReplacedInst,
-                  ExprBuilderContext &EBC, DominatorTree &DT,
-                  std::map<Inst *, Value *> &ReplacedValues,
+  Value *getValue(Inst *I, Instruction *ReplacedInst, ExprBuilderContext &EBC,
+                  DominatorTree &DT, std::map<Inst *, Value *> &ReplacedValues,
                   IRBuilder<> &Builder, Module *M) {
     Type *T = Type::getIntNTy(ReplacedInst->getContext(), I->Width);
     if (I->K == Inst::Const)
@@ -213,8 +217,8 @@ public:
       return 0;
     }
 
-    Value *V0 = getOperand(I, 0, ReplacedInst, EBC, DT, ReplacedValues,
-               Builder, M);
+    Value *V0 =
+        getOperand(I, 0, ReplacedInst, EBC, DT, ReplacedValues, Builder, M);
     if (!V0)
       return 0;
 
@@ -227,38 +231,39 @@ public:
         return Builder.CreateZExt(V0, T);
       case Inst::Trunc:
         return Builder.CreateTrunc(V0, T);
-      case Inst::CtPop:{
+      case Inst::CtPop: {
         Function *F = Intrinsic::getDeclaration(M, Intrinsic::ctpop, T);
         return Builder.CreateCall(F, V0);
       }
-      case Inst::BSwap:{
+      case Inst::BSwap: {
         Function *F = Intrinsic::getDeclaration(M, Intrinsic::bswap, T);
         return Builder.CreateCall(F, V0);
       }
-      case Inst::BitReverse:{
+      case Inst::BitReverse: {
         Function *F = Intrinsic::getDeclaration(M, Intrinsic::bitreverse, T);
         return Builder.CreateCall(F, V0);
       }
-      case Inst::Cttz:{
+      case Inst::Cttz: {
         Function *F = Intrinsic::getDeclaration(M, Intrinsic::cttz, T);
-        // According to LLVM LangRef, the second argument of cttz i1 <is_zero_undef>
-        // must be a constant and is a flag to indicate whether the intrinsic should
-        // ensure that a zero as the first argument produces a defined result.
-        return Builder.CreateCall(F, {V0,
-              ConstantInt::get(V0->getContext(), APInt(1, 0))});
+        // According to LLVM LangRef, the second argument of cttz i1
+        // <is_zero_undef> must be a constant and is a flag to indicate whether
+        // the intrinsic should ensure that a zero as the first argument
+        // produces a defined result.
+        return Builder.CreateCall(
+            F, {V0, ConstantInt::get(V0->getContext(), APInt(1, 0))});
       }
-      case Inst::Ctlz:{
+      case Inst::Ctlz: {
         // Ditto
         Function *F = Intrinsic::getDeclaration(M, Intrinsic::ctlz, T);
-        return Builder.CreateCall(F, {V0,
-              ConstantInt::get(V0->getContext(), APInt(1, 0))});
+        return Builder.CreateCall(
+            F, {V0, ConstantInt::get(V0->getContext(), APInt(1, 0))});
       }
       default:
         break;
       }
-    case 2:{
-      Value *V1 = getOperand(I, 1, ReplacedInst, EBC, DT, ReplacedValues,
-                             Builder, M);
+    case 2: {
+      Value *V1 =
+          getOperand(I, 1, ReplacedInst, EBC, DT, ReplacedValues, Builder, M);
       if (!V1)
         return 0;
       switch (I->K) {
@@ -333,40 +338,56 @@ public:
         }
         llvm::report_fatal_error("Unexpected extractvalue semantics!");
       case Inst::SAddSat:
-        return Builder.CreateCall(Intrinsic::getDeclaration(M, Intrinsic::sadd_sat, T), {V0, V1});
+        return Builder.CreateCall(
+            Intrinsic::getDeclaration(M, Intrinsic::sadd_sat, T), {V0, V1});
       case Inst::UAddSat:
-        return Builder.CreateCall(Intrinsic::getDeclaration(M, Intrinsic::uadd_sat, T), {V0, V1});
+        return Builder.CreateCall(
+            Intrinsic::getDeclaration(M, Intrinsic::uadd_sat, T), {V0, V1});
       case Inst::SSubSat:
-        return Builder.CreateCall(Intrinsic::getDeclaration(M, Intrinsic::ssub_sat, T), {V0, V1});
+        return Builder.CreateCall(
+            Intrinsic::getDeclaration(M, Intrinsic::ssub_sat, T), {V0, V1});
       case Inst::USubSat:
-        return Builder.CreateCall(Intrinsic::getDeclaration(M, Intrinsic::usub_sat, T), {V0, V1});
+        return Builder.CreateCall(
+            Intrinsic::getDeclaration(M, Intrinsic::usub_sat, T), {V0, V1});
       case Inst::SAddWithOverflow:
-        return Builder.CreateCall(Intrinsic::getDeclaration(M, Intrinsic::sadd_with_overflow, V0->getType()),
-                {V0, V1});
+        return Builder.CreateCall(
+            Intrinsic::getDeclaration(M, Intrinsic::sadd_with_overflow,
+                                      V0->getType()),
+            {V0, V1});
       case Inst::UAddWithOverflow:
-        return Builder.CreateCall(Intrinsic::getDeclaration(M, Intrinsic::uadd_with_overflow, V0->getType()),
-                {V0, V1});
+        return Builder.CreateCall(
+            Intrinsic::getDeclaration(M, Intrinsic::uadd_with_overflow,
+                                      V0->getType()),
+            {V0, V1});
       case Inst::SSubWithOverflow:
-        return Builder.CreateCall(Intrinsic::getDeclaration(M, Intrinsic::ssub_with_overflow, V0->getType()),
-                {V0, V1});
+        return Builder.CreateCall(
+            Intrinsic::getDeclaration(M, Intrinsic::ssub_with_overflow,
+                                      V0->getType()),
+            {V0, V1});
       case Inst::USubWithOverflow:
-        return Builder.CreateCall(Intrinsic::getDeclaration(M, Intrinsic::usub_with_overflow, V0->getType()),
-                {V0, V1});
+        return Builder.CreateCall(
+            Intrinsic::getDeclaration(M, Intrinsic::usub_with_overflow,
+                                      V0->getType()),
+            {V0, V1});
       case Inst::SMulWithOverflow:
-          return Builder.CreateCall(Intrinsic::getDeclaration(M, Intrinsic::smul_with_overflow, V0->getType()),
-                  {V0, V1});
+        return Builder.CreateCall(
+            Intrinsic::getDeclaration(M, Intrinsic::smul_with_overflow,
+                                      V0->getType()),
+            {V0, V1});
       case Inst::UMulWithOverflow:
-          return Builder.CreateCall(Intrinsic::getDeclaration(M, Intrinsic::umul_with_overflow, V0->getType()),
-                  {V0, V1});
+        return Builder.CreateCall(
+            Intrinsic::getDeclaration(M, Intrinsic::umul_with_overflow,
+                                      V0->getType()),
+            {V0, V1});
       default:
         break;
       }
     }
-    case 3:{
-      Value *V1 = getOperand(I, 1, ReplacedInst, EBC, DT,
-                           ReplacedValues, Builder, M);
-      Value *V2 = getOperand(I, 2, ReplacedInst, EBC, DT,
-                           ReplacedValues, Builder, M);
+    case 3: {
+      Value *V1 =
+          getOperand(I, 1, ReplacedInst, EBC, DT, ReplacedValues, Builder, M);
+      Value *V2 =
+          getOperand(I, 2, ReplacedInst, EBC, DT, ReplacedValues, Builder, M);
       if (!V1 || !V2)
         return 0;
       switch (I->K) {
@@ -386,13 +407,13 @@ public:
     default:
       break;
     }
-    report_fatal_error((std::string)"Unhandled Souper instruction " +
+    report_fatal_error((std::string) "Unhandled Souper instruction " +
                        Inst::getKindName(I->K) + " in getValue()");
   }
 
   bool runOnFunction(Function &F) override {
     if (F.isDeclaration())
-		return false;
+      return false;
 
     bool Changed = false;
     InstContext IC;
@@ -402,7 +423,8 @@ public:
     if (!LI)
       report_fatal_error("getLoopInfo() failed");
     auto &DT = getAnalysis<DominatorTreeWrapperPass>().getDomTree();
-    DemandedBits *DB = &getAnalysis<DemandedBitsWrapperPass>().getDemandedBits();
+    DemandedBits *DB =
+        &getAnalysis<DemandedBitsWrapperPass>().getDemandedBits();
     if (!DB)
       report_fatal_error("getDemandedBits() failed");
     LazyValueInfo *LVI = &getAnalysis<LazyValueInfoWrapperPass>().getLVI();
@@ -411,17 +433,19 @@ public:
     ScalarEvolution *SE = &getAnalysis<ScalarEvolutionWrapperPass>().getSE();
     if (!SE)
       report_fatal_error("getSE() failed");
-    TargetLibraryInfo* TLI = &getAnalysis<TargetLibraryInfoWrapperPass>().getTLI(F);
+    TargetLibraryInfo *TLI =
+        &getAnalysis<TargetLibraryInfoWrapperPass>().getTLI(F);
     if (!TLI)
       report_fatal_error("getTLI() failed");
-    FunctionCandidateSet CS = ExtractCandidatesFromPass(&F, LI, DB, LVI, SE, TLI, IC, EBC);
+    FunctionCandidateSet CS =
+        ExtractCandidatesFromPass(&F, LI, DB, LVI, SE, TLI, IC, EBC);
 
     std::string FunctionName;
     if (F.hasLocalLinkage()) {
       FunctionName =
-        (F.getParent()->getModuleIdentifier() + ":" + F.getName()).str();
+          (F.getParent()->getModuleIdentifier() + ":" + F.getName()).str();
     } else {
-      FunctionName = F.getName();
+      FunctionName = F.getName().str();
     }
 
     if (DebugLevel > 1) {
@@ -445,7 +469,6 @@ public:
       }
     }
 
-
     for (auto &Cand : CandMap) {
 
       if (StaticProfile) {
@@ -455,19 +478,17 @@ public:
         std::string HField = "sprofile " + Loc.str();
         ReplacementContext Context;
         KV->hIncrBy(GetReplacementLHSString(Cand.BPCs, Cand.PCs,
-                                            Cand.Mapping.LHS,
-                                            Context), HField, 1);
+                                            Cand.Mapping.LHS, Context),
+                    HField, 1);
       }
       if (DynamicProfileAll) {
         dynamicProfile(&F, Cand);
         Changed = true;
         continue;
       }
-      if (std::error_code EC =
-          S->infer(Cand.BPCs, Cand.PCs, Cand.Mapping.LHS,
-                   Cand.Mapping.RHS, IC)) {
-        if (EC == std::errc::timed_out ||
-            EC == std::errc::value_too_large) {
+      if (std::error_code EC = S->infer(Cand.BPCs, Cand.PCs, Cand.Mapping.LHS,
+                                        Cand.Mapping.RHS, IC)) {
+        if (EC == std::errc::timed_out || EC == std::errc::value_too_large) {
           continue;
         } else {
           report_fatal_error("Unable to query solver: " + EC.message() + "\n");
@@ -480,8 +501,8 @@ public:
       assert(Cand.Mapping.LHS->hasOrigin(I));
       IRBuilder<> Builder(I);
 
-      Value *NewVal = getValue(Cand.Mapping.RHS, I, EBC, DT,
-                               ReplacedValues, Builder, F.getParent());
+      Value *NewVal = getValue(Cand.Mapping.RHS, I, EBC, DT, ReplacedValues,
+                               Builder, F.getParent());
 
       // if LHS comes from use, then NewVal should be a constant
       assert(Cand.Mapping.LHS->HarvestKind != HarvestType::HarvestedFromUse ||
@@ -498,7 +519,8 @@ public:
 
       if (ReplacementIdx < FirstReplace || ReplacementIdx > LastReplace) {
         if (DebugLevel > 1)
-          errs() << "Skipping this replacement (number " << ReplacementIdx << ")\n";
+          errs() << "Skipping this replacement (number " << ReplacementIdx
+                 << ")\n";
         if (ReplacementIdx < std::numeric_limits<unsigned>::max())
           ++ReplacementIdx;
         continue;
@@ -542,7 +564,7 @@ public:
         Changed = true;
       } else {
         for (llvm::Value::use_iterator UI = I->use_begin();
-             UI != I->use_end(); ) {
+             UI != I->use_end();) {
           llvm::Use &U = *UI;
           ++UI;
           // TODO: Handle general values, not only instructions
@@ -566,15 +588,16 @@ public:
       errs() << "\n";
     }
 
-	if(DebugLevel > 1) errs() << "\nTotal of " << ReplacementsDone
-                             << " replacements done on this module\n";
+    if (DebugLevel > 1)
+      errs() << "\nTotal of " << ReplacementsDone
+             << " replacements done on this module\n";
 
     return Changed;
   }
 };
 
 char SouperPass::ID = 0;
-}
+} // namespace
 
 namespace llvm {
 void initializeSouperPassPass(llvm::PassRegistry &);

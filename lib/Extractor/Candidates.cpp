@@ -21,7 +21,6 @@
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/ScalarEvolution.h"
 #include "llvm/Analysis/ValueTracking.h"
-#include "llvm/InitializePasses.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/ConstantRange.h"
 #include "llvm/IR/Constants.h"
@@ -32,6 +31,7 @@
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Type.h"
+#include "llvm/InitializePasses.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/KnownBits.h"
 #include <map>
@@ -39,7 +39,6 @@
 #include <sstream>
 #include <tuple>
 #include <unordered_set>
-
 
 static llvm::cl::opt<bool>
     ExploitBPCs("souper-exploit-blockpcs",
@@ -117,7 +116,7 @@ void CandidateReplacement::printFunction(llvm::raw_ostream &Out) const {
   if (F->hasLocalLinkage()) {
     N = (F->getParent()->getModuleIdentifier() + ":" + F->getName()).str();
   } else {
-    N = F->getName();
+    N = F->getName().str();
   }
   Out << "; Function: " << N << '\n';
 }
@@ -266,6 +265,7 @@ Inst *ExprBuilder::buildConstant(Constant *c) {
   }
 }
 
+#if 0
 Inst *ExprBuilder::buildGEP(Inst *Ptr, gep_type_iterator begin,
                             gep_type_iterator end) {
   unsigned PSize = DL.getPointerSizeInBits();
@@ -292,6 +292,7 @@ Inst *ExprBuilder::buildGEP(Inst *Ptr, gep_type_iterator begin,
   }
   return Ptr;
 }
+#endif
 
 void ExprBuilder::markExternalUses(Inst *I) {
   std::map<Inst *, unsigned> UsesCount;

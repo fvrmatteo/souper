@@ -25,10 +25,10 @@ using namespace souper;
 
 namespace {
 
-static llvm::cl::opt<bool> DumpKLEEExprs(
-    "dump-klee-exprs",
-    llvm::cl::desc("Dump KLEE expressions after SMTLIB queries"),
-    llvm::cl::init(false));
+static llvm::cl::opt<bool>
+    DumpKLEEExprs("dump-klee-exprs",
+                  llvm::cl::desc("Dump KLEE expressions after SMTLIB queries"),
+                  llvm::cl::init(false));
 
 class KLEEBuilder : public ExprBuilder {
   UniqueNameSet ArrayNames;
@@ -41,9 +41,10 @@ public:
 
   std::string GetExprStr(const BlockPCs &BPCs,
                          const std::vector<InstMapping> &PCs,
-                         InstMapping Mapping,
-                         std::vector<Inst *> *ModelVars, bool Negate) override {
-    Inst *Cand = GetCandidateExprForReplacement(BPCs, PCs, Mapping, /*Precondition=*/0, Negate);
+                         InstMapping Mapping, std::vector<Inst *> *ModelVars,
+                         bool Negate) override {
+    Inst *Cand = GetCandidateExprForReplacement(BPCs, PCs, Mapping,
+                                                /*Precondition=*/0, Negate);
     if (!Cand)
       return std::string();
     prepopulateExprMap(Cand);
@@ -61,13 +62,13 @@ public:
 
   std::string BuildQuery(const BlockPCs &BPCs,
                          const std::vector<InstMapping> &PCs,
-                         InstMapping Mapping,
-                         std::vector<Inst *> *ModelVars,
+                         InstMapping Mapping, std::vector<Inst *> *ModelVars,
                          Inst *Precondition, bool Negate) override {
     std::string SMTStr;
     llvm::raw_string_ostream SMTSS(SMTStr);
     ConstraintManager Manager;
-    Inst *Cand = GetCandidateExprForReplacement(BPCs, PCs, Mapping, Precondition, Negate);
+    Inst *Cand = GetCandidateExprForReplacement(BPCs, PCs, Mapping,
+                                                Precondition, Negate);
     if (!Cand)
       return std::string();
     prepopulateExprMap(Cand);
@@ -102,21 +103,20 @@ public:
 
 private:
   ref<Expr> countOnes(ref<Expr> L) {
-     Expr::Width Width = L->getWidth();
-     ref<Expr> Count =  klee::ConstantExpr::alloc(llvm::APInt(Width, 0));
-     for (unsigned i=0; i<Width; i++) {
-       ref<Expr> Bit = ExtractExpr::create(L, i, Expr::Bool);
-       ref<Expr> BitExt = ZExtExpr::create(Bit, Width);
-       Count = AddExpr::create(Count, BitExt);
-     }
-     return Count;
+    Expr::Width Width = L->getWidth();
+    ref<Expr> Count = klee::ConstantExpr::alloc(llvm::APInt(Width, 0));
+    for (unsigned i = 0; i < Width; i++) {
+      ref<Expr> Bit = ExtractExpr::create(L, i, Expr::Bool);
+      ref<Expr> BitExt = ZExtExpr::create(Bit, Width);
+      Count = AddExpr::create(Count, BitExt);
+    }
+    return Count;
   }
 
-  ref<Expr> buildAssoc(
-      std::function<ref<Expr>(ref<Expr>, ref<Expr>)> F,
-      llvm::ArrayRef<Inst *> Ops) {
+  ref<Expr> buildAssoc(std::function<ref<Expr>(ref<Expr>, ref<Expr>)> F,
+                       llvm::ArrayRef<Inst *> Ops) {
     ref<Expr> E = get(Ops[0]);
-    for (Inst *I : llvm::ArrayRef<Inst *>(Ops.data()+1, Ops.size()-1)) {
+    for (Inst *I : llvm::ArrayRef<Inst *>(Ops.data() + 1, Ops.size() - 1)) {
       E = F(E, get(I));
     }
     return E;
@@ -134,11 +134,12 @@ private:
       return makeSizedArrayRead(I->Width, I->Name, I);
     case Inst::Phi: {
       const auto &PredExpr = I->B->PredVars;
-      assert((PredExpr.size() || Ops.size() == 1) && "there must be block predicates");
+      assert((PredExpr.size() || Ops.size() == 1) &&
+             "there must be block predicates");
       ref<Expr> E = get(Ops[0]);
       // e.g. P2 ? (P1 ? Op1_Expr : Op2_Expr) : Op3_Expr
       for (unsigned J = 1; J < Ops.size(); ++J) {
-        E = SelectExpr::create(get(PredExpr[J-1]), E, get(Ops[J]));
+        E = SelectExpr::create(get(PredExpr[J - 1]), E, get(Ops[J]));
       }
       return E;
     }
@@ -231,8 +232,8 @@ private:
         ref<Expr> Srem = SRemExpr::create(get(Ops[0]), R);
         return Srem;
       }
-      llvm_unreachable("unknown kind");
-    }
+        llvm_unreachable("unknown kind");
+      }
     }
 
     case Inst::And:
@@ -300,7 +301,8 @@ private:
       constexpr unsigned bytelen = 8;
       ref<Expr> res = ExtractExpr::create(L, 0, bytelen);
       for (unsigned i = 1; i < L->getWidth() / bytelen; i++) {
-        res = ConcatExpr::create(res, ExtractExpr::create(L, i * bytelen, bytelen));
+        res = ConcatExpr::create(res,
+                                 ExtractExpr::create(L, i * bytelen, bytelen));
       }
 
       return res;
@@ -318,10 +320,10 @@ private:
       ref<Expr> L = get(Ops[0]);
       unsigned Width = L->getWidth();
       ref<Expr> Val = L;
-      for (unsigned i=0, j=0; j<Width/2; i++) {
-        j = 1<<i;
-        Val = OrExpr::create(Val, ShlExpr::create(Val,
-                             klee::ConstantExpr::create(j, Width)));
+      for (unsigned i = 0, j = 0; j < Width / 2; i++) {
+        j = 1 << i;
+        Val = OrExpr::create(
+            Val, ShlExpr::create(Val, klee::ConstantExpr::create(j, Width)));
       }
       return SubExpr::create(klee::ConstantExpr::create(Width, Width),
                              countOnes(Val));
@@ -330,10 +332,10 @@ private:
       ref<Expr> L = get(Ops[0]);
       unsigned Width = L->getWidth();
       ref<Expr> Val = L;
-      for (unsigned i=0, j=0; j<Width/2; i++) {
-        j = 1<<i;
-        Val = OrExpr::create(Val, LShrExpr::create(Val,
-                             klee::ConstantExpr::create(j, Width)));
+      for (unsigned i = 0, j = 0; j < Width / 2; i++) {
+        j = 1 << i;
+        Val = OrExpr::create(
+            Val, LShrExpr::create(Val, klee::ConstantExpr::create(j, Width)));
       }
       return SubExpr::create(klee::ConstantExpr::create(Width, Width),
                              countOnes(Val));
@@ -357,17 +359,23 @@ private:
       return ExtractExpr::create(Shifted, BitOffset, IWidth);
     }
     case Inst::SAddO:
-      return XorExpr::create(get(addnswUB(I)), klee::ConstantExpr::create(1, Expr::Bool));
+      return XorExpr::create(get(addnswUB(I)),
+                             klee::ConstantExpr::create(1, Expr::Bool));
     case Inst::UAddO:
-      return XorExpr::create(get(addnuwUB(I)), klee::ConstantExpr::create(1, Expr::Bool));
+      return XorExpr::create(get(addnuwUB(I)),
+                             klee::ConstantExpr::create(1, Expr::Bool));
     case Inst::SSubO:
-      return XorExpr::create(get(subnswUB(I)), klee::ConstantExpr::create(1, Expr::Bool));
+      return XorExpr::create(get(subnswUB(I)),
+                             klee::ConstantExpr::create(1, Expr::Bool));
     case Inst::USubO:
-      return XorExpr::create(get(subnuwUB(I)), klee::ConstantExpr::create(1, Expr::Bool));
+      return XorExpr::create(get(subnuwUB(I)),
+                             klee::ConstantExpr::create(1, Expr::Bool));
     case Inst::SMulO:
-      return XorExpr::create(get(mulnswUB(I)), klee::ConstantExpr::create(1, Expr::Bool));
+      return XorExpr::create(get(mulnswUB(I)),
+                             klee::ConstantExpr::create(1, Expr::Bool));
     case Inst::UMulO:
-      return XorExpr::create(get(mulnuwUB(I)), klee::ConstantExpr::create(1, Expr::Bool));
+      return XorExpr::create(get(mulnuwUB(I)),
+                             klee::ConstantExpr::create(1, Expr::Bool));
     case Inst::ExtractValue: {
       unsigned Index = Ops[1]->Val.getZExtValue();
       return get(Ops[0]->Ops[Index]);
@@ -377,8 +385,10 @@ private:
       auto sextL = SExtExpr::create(get(Ops[0]), I->Width + 1);
       auto sextR = SExtExpr::create(get(Ops[1]), I->Width + 1);
       auto addExt = AddExpr::create(sextL, sextR);
-      auto smin = klee::ConstantExpr::alloc(llvm::APInt::getSignedMinValue(I->Width));
-      auto smax = klee::ConstantExpr::alloc(llvm::APInt::getSignedMaxValue(I->Width));
+      auto smin =
+          klee::ConstantExpr::alloc(llvm::APInt::getSignedMinValue(I->Width));
+      auto smax =
+          klee::ConstantExpr::alloc(llvm::APInt::getSignedMaxValue(I->Width));
       auto sminExt = SExtExpr::create(smin, I->Width + 1);
       auto smaxExt = SExtExpr::create(smax, I->Width + 1);
       auto pred = SleExpr::create(addExt, sminExt);
@@ -390,15 +400,19 @@ private:
     }
     case Inst::UAddSat: {
       ref<Expr> add = AddExpr::create(get(Ops[0]), get(Ops[1]));
-      return SelectExpr::create(get(addnuwUB(I)), add, klee::ConstantExpr::alloc(llvm::APInt::getMaxValue(I->Width)));
+      return SelectExpr::create(
+          get(addnuwUB(I)), add,
+          klee::ConstantExpr::alloc(llvm::APInt::getMaxValue(I->Width)));
     }
     case Inst::SSubSat: {
       ref<Expr> sub = SubExpr::create(get(Ops[0]), get(Ops[1]));
       auto sextL = SExtExpr::create(get(Ops[0]), I->Width + 1);
       auto sextR = SExtExpr::create(get(Ops[1]), I->Width + 1);
       auto subExt = SubExpr::create(sextL, sextR);
-      auto smin = klee::ConstantExpr::alloc(llvm::APInt::getSignedMinValue(I->Width));
-      auto smax = klee::ConstantExpr::alloc(llvm::APInt::getSignedMaxValue(I->Width));
+      auto smin =
+          klee::ConstantExpr::alloc(llvm::APInt::getSignedMinValue(I->Width));
+      auto smax =
+          klee::ConstantExpr::alloc(llvm::APInt::getSignedMaxValue(I->Width));
       auto sminExt = SExtExpr::create(smin, I->Width + 1);
       auto smaxExt = SExtExpr::create(smax, I->Width + 1);
       auto pred = SleExpr::create(subExt, sminExt);
@@ -410,7 +424,9 @@ private:
     }
     case Inst::USubSat: {
       ref<Expr> sub = SubExpr::create(get(Ops[0]), get(Ops[1]));
-      return SelectExpr::create(get(subnuwUB(I)), sub, klee::ConstantExpr::alloc(llvm::APInt::getMinValue(I->Width)));
+      return SelectExpr::create(
+          get(subnuwUB(I)), sub,
+          klee::ConstantExpr::alloc(llvm::APInt::getMinValue(I->Width)));
     }
     case Inst::SAddWithOverflow:
     case Inst::UAddWithOverflow:
@@ -477,25 +493,25 @@ private:
     });
   }
 
-  ref<Expr> makeSizedArrayRead(unsigned Width, llvm::StringRef Name, Inst *Origin) {
+  ref<Expr> makeSizedArrayRead(unsigned Width, llvm::StringRef Name,
+                               Inst *Origin) {
     std::string NameStr;
     if (Name.empty())
       NameStr = "arr";
     else if (Name[0] >= '0' && Name[0] <= '9')
       NameStr = ("a" + Name).str();
     else
-      NameStr = Name;
+      NameStr = Name.str();
     Arrays.emplace_back(
-     new Array(ArrayNames.makeName(NameStr), 1, 0, 0, Expr::Int32, Width));
+        new Array(ArrayNames.makeName(NameStr), 1, 0, 0, Expr::Int32, Width));
     Vars.push_back(Origin);
 
     UpdateList UL(Arrays.back().get(), 0);
     return ReadExpr::create(UL, klee::ConstantExpr::alloc(0, Expr::Int32));
   }
-
 };
 
-}
+} // namespace
 
 std::unique_ptr<ExprBuilder> souper::createKLEEBuilder(InstContext &IC) {
   return std::unique_ptr<ExprBuilder>(new KLEEBuilder(IC));

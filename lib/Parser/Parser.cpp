@@ -14,13 +14,13 @@
 
 #include "souper/Parser/Parser.h"
 
+#include "souper/Extractor/Candidates.h"
+#include "souper/Inst/Inst.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
-#include "souper/Extractor/Candidates.h"
-#include "souper/Inst/Inst.h"
 
 #include <string>
 #include <unordered_set>
@@ -55,9 +55,7 @@ struct Token {
   unsigned Width;
   std::string PatternString;
 
-  StringRef str() const {
-    return StringRef(Pos, Len);
-  }
+  StringRef str() const { return StringRef(Pos, Len); }
 };
 
 struct TokenPos {
@@ -80,7 +78,7 @@ struct Lexer {
   }
 };
 
-}
+} // namespace
 
 Token Lexer::getNextToken(std::string &ErrStr) {
   while (Begin != End) {
@@ -110,68 +108,68 @@ Token Lexer::getNextToken(std::string &ErrStr) {
 
 FoundChar:
   switch (*Begin) {
-    case ',':
+  case ',':
+    ++Begin;
+    return Token{Token::Comma, Begin - 1, 1, APInt()};
+  case '=':
+    ++Begin;
+    return Token{Token::Eq, Begin - 1, 1, APInt()};
+  case '%': {
+    ++Begin;
+    unsigned Width = 0;
+    const char *NameBegin = Begin;
+    while (Begin != End &&
+           ((*Begin >= '0' && *Begin <= '9') ||
+            (*Begin >= 'A' && *Begin <= 'Z') ||
+            (*Begin >= 'a' && *Begin <= 'z') || (*Begin == '_'))) {
       ++Begin;
-      return Token{Token::Comma, Begin-1, 1, APInt()};
-    case '=':
+    }
+    if (Begin == NameBegin) {
+      ErrStr = "expected identifier";
+      return Token{Token::Error, Begin, 0, APInt()};
+    }
+    const char *NameEnd = Begin;
+    if (Begin != End && *Begin == ':') {
       ++Begin;
-      return Token{Token::Eq, Begin-1, 1, APInt()};
-    case '%': {
-      ++Begin;
-      unsigned Width = 0;
-      const char *NameBegin = Begin;
-      while (Begin != End && ((*Begin >= '0' && *Begin <= '9') ||
-                              (*Begin >= 'A' && *Begin <= 'Z') ||
-                              (*Begin >= 'a' && *Begin <= 'z') ||
-                              (*Begin == '_'))) {
-        ++Begin;
-      }
-      if (Begin == NameBegin) {
-        ErrStr = "expected identifier";
+      if (Begin == End || *Begin != 'i') {
+        ErrStr = "expected 'i'";
         return Token{Token::Error, Begin, 0, APInt()};
       }
-      const char *NameEnd = Begin;
-      if (Begin != End && *Begin == ':') {
-        ++Begin;
-        if (Begin == End || *Begin != 'i') {
-          ErrStr = "expected 'i'";
-          return Token{Token::Error, Begin, 0, APInt()};
-        }
 
+      ++Begin;
+      const char *WidthBegin = Begin;
+      while (Begin != End && *Begin >= '0' && *Begin <= '9') {
+        Width = Width * 10 + (*Begin - '0');
         ++Begin;
-        const char *WidthBegin = Begin;
-        while (Begin != End && *Begin >= '0' && *Begin <= '9') {
-          Width = Width*10 + (*Begin - '0');
-          ++Begin;
-        }
-        if (Begin == WidthBegin) {
-          ErrStr = "expected integer";
-          return Token{Token::Error, Begin, 0, APInt()};
-        }
-        if (Width == 0) {
-          ErrStr = "width must be at least 1";
-          return Token{Token::Error, WidthBegin, 0, APInt()};
-        }
       }
-
-      Token T;
-      T.K = Token::ValName;
-      T.Pos = NameBegin - 1;
-      T.Len = Begin - NameBegin + 1;
-      T.Name = StringRef(NameBegin, NameEnd - NameBegin);
-      T.Width = Width;
-      return T;
+      if (Begin == WidthBegin) {
+        ErrStr = "expected integer";
+        return Token{Token::Error, Begin, 0, APInt()};
+      }
+      if (Width == 0) {
+        ErrStr = "width must be at least 1";
+        return Token{Token::Error, WidthBegin, 0, APInt()};
+      }
     }
+
+    Token T;
+    T.K = Token::ValName;
+    T.Pos = NameBegin - 1;
+    T.Len = Begin - NameBegin + 1;
+    T.Name = StringRef(NameBegin, NameEnd - NameBegin);
+    T.Width = Width;
+    return T;
+  }
   }
 
-  if ((*Begin >= 'a' && *Begin <= 'z') ||
-      (*Begin >= 'A' && *Begin <= 'Z')) {
+  if ((*Begin >= 'a' && *Begin <= 'z') || (*Begin >= 'A' && *Begin <= 'Z')) {
     const char *TokenBegin = Begin;
     do {
       ++Begin;
-    } while (Begin != End && ((*Begin >= 'a' && *Begin <= 'z') ||
-             (*Begin == '.') || (*Begin >= 'A' && *Begin <= 'Z')));
-    std::string DataFlowFact = StringRef(TokenBegin, Begin - TokenBegin);
+    } while (Begin != End &&
+             ((*Begin >= 'a' && *Begin <= 'z') || (*Begin == '.') ||
+              (*Begin >= 'A' && *Begin <= 'Z')));
+    std::string DataFlowFact = StringRef(TokenBegin, Begin - TokenBegin).str();
     if (DataFlowFact == "knownBits") {
       if (*Begin != '=') {
         ErrStr = "expected '=' for knownBits";
@@ -185,10 +183,16 @@ FoundChar:
         ErrStr = "expected [0|1|x]+ for knownBits";
         return Token{Token::Error, Begin, 0, APInt()};
       }
-      return Token{Token::KnownBits, TokenBegin, size_t(Begin - TokenBegin), APInt(),
-                   "", 0, StringRef(PatternBegin, Begin - PatternBegin)};
+      return Token{Token::KnownBits,
+                   TokenBegin,
+                   size_t(Begin - TokenBegin),
+                   APInt(),
+                   "",
+                   0,
+                   StringRef(PatternBegin, Begin - PatternBegin).str()};
     } else
-      return Token{Token::Ident, TokenBegin, size_t(Begin - TokenBegin), APInt()};
+      return Token{Token::Ident, TokenBegin, size_t(Begin - TokenBegin),
+                   APInt()};
   }
 
   if (*Begin == '-' || (*Begin >= '0' && *Begin <= '9')) {
@@ -211,7 +215,7 @@ FoundChar:
       unsigned Width = 0;
       const char *WidthBegin = Begin;
       while (Begin != End && *Begin >= '0' && *Begin <= '9') {
-        Width = Width*10 + (*Begin - '0');
+        Width = Width * 10 + (*Begin - '0');
         ++Begin;
       }
       if (Begin == WidthBegin) {
@@ -233,26 +237,26 @@ FoundChar:
 
     return Token{Token::UntypedInt, NumBegin, size_t(Begin - NumBegin),
                  APInt((NumEnd - NumBegin) * 5,
-                        StringRef(NumBegin, NumEnd - NumBegin), 10)};
+                       StringRef(NumBegin, NumEnd - NumBegin), 10)};
   }
 
   if (*Begin == '(') {
     ++Begin;
-    return Token{Token::OpenParen, Begin-1, 1, APInt()};
+    return Token{Token::OpenParen, Begin - 1, 1, APInt()};
   }
   if (*Begin == ')') {
     ++Begin;
-    return Token{Token::CloseParen, Begin-1, 1, APInt()};
+    return Token{Token::CloseParen, Begin - 1, 1, APInt()};
   }
 
   if (*Begin == '[') {
     ++Begin;
-    return Token{Token::OpenBracket, Begin-1, 1, APInt()};
+    return Token{Token::OpenBracket, Begin - 1, 1, APInt()};
   }
 
   ErrStr = std::string("unexpected '") + *Begin + "'";
   ++Begin;
-  return Token{Token::Error, Begin-1, 0, APInt()};
+  return Token{Token::Error, Begin - 1, 0, APInt()};
 }
 
 void souper::TestLexer(StringRef Str) {
@@ -287,13 +291,8 @@ struct Parser {
          std::vector<ParsedReplacement> &Reps, ReplacementKind RK,
          std::vector<ReplacementContext> *RCsIn,
          std::vector<ReplacementContext> *RCsOut)
-      : FileName(FileName),
-        L(Str.data(), Str.data() + Str.size()),
-        IC(IC),
-        Reps(Reps),
-        RK(RK),
-        RCsIn(RCsIn),
-        RCsOut(RCsOut) {
+      : FileName(FileName), L(Str.data(), Str.data() + Str.size()), IC(IC),
+        Reps(Reps), RK(RK), RCsIn(RCsIn), RCsOut(RCsOut) {
     if (RCsIn)
       Context = (*RCsIn)[0];
   }
@@ -364,45 +363,45 @@ struct Parser {
   bool isOverflow(Inst::Kind IK);
 };
 
-}
+} // namespace
 
 Inst *Parser::parseInst(std::string &ErrStr) {
   switch (CurTok.K) {
-    case Token::ValName: {
-      if (CurTok.Width != 0) {
-        ErrStr = makeErrStr("inst reference may not have a width");
-        return 0;
-      }
-      Inst *I = Context.getInst(CurTok.Name);
-      if (!I) {
-        ErrStr = makeErrStr(std::string("%") + CurTok.Name.str() +
-                            " is not an inst");
-        return 0;
-      }
-      if (!consumeToken(ErrStr))
-        return 0;
-      return I;
-    }
-
-    case Token::Int: {
-      Inst *I = IC.getConst(CurTok.Val);
-      if (!consumeToken(ErrStr))
-        return 0;
-      return I;
-    }
-
-    case Token::UntypedInt: {
-      Inst *I = IC.getUntypedConst(CurTok.Val);
-      if (!consumeToken(ErrStr))
-        return 0;
-      return I;
-    }
-
-    default: {
-      ErrStr = makeErrStr("unexpected token: '" +
-                          std::string(CurTok.str()) + "'");
+  case Token::ValName: {
+    if (CurTok.Width != 0) {
+      ErrStr = makeErrStr("inst reference may not have a width");
       return 0;
     }
+    Inst *I = Context.getInst(CurTok.Name);
+    if (!I) {
+      ErrStr =
+          makeErrStr(std::string("%") + CurTok.Name.str() + " is not an inst");
+      return 0;
+    }
+    if (!consumeToken(ErrStr))
+      return 0;
+    return I;
+  }
+
+  case Token::Int: {
+    Inst *I = IC.getConst(CurTok.Val);
+    if (!consumeToken(ErrStr))
+      return 0;
+    return I;
+  }
+
+  case Token::UntypedInt: {
+    Inst *I = IC.getUntypedConst(CurTok.Val);
+    if (!consumeToken(ErrStr))
+      return 0;
+    return I;
+  }
+
+  default: {
+    ErrStr =
+        makeErrStr("unexpected token: '" + std::string(CurTok.str()) + "'");
+    return 0;
+  }
   }
 }
 
@@ -441,11 +440,11 @@ bool Parser::typeCheckOpsMatchingWidths(llvm::MutableArrayRef<Inst *> Ops,
   return true;
 }
 
-bool Parser::typeCheckPhi(unsigned Width, Block *B,
-                          std::vector<Inst *> &Ops, std::string &ErrStr) {
+bool Parser::typeCheckPhi(unsigned Width, Block *B, std::vector<Inst *> &Ops,
+                          std::string &ErrStr) {
   if (B->Preds != Ops.size()) {
     ErrStr = "phi has " + utostr(Ops.size()) +
-      " operand(s) but preceding block has " + utostr(B->Preds);
+             " operand(s) but preceding block has " + utostr(B->Preds);
     return false;
   }
   auto IdxIt = BlockPCIdxMap.find(B);
@@ -460,7 +459,7 @@ bool Parser::typeCheckPhi(unsigned Width, Block *B,
 
   if (Width != 0 && Width != Ops[0]->Width) {
     ErrStr = "inst must have width of " + utostr(Ops[0]->Width) +
-                         ", has width " + utostr(Width);
+             ", has width " + utostr(Width);
     return false;
   }
 
@@ -475,8 +474,7 @@ bool Parser::typeCheckPhi(unsigned Width, Block *B,
 }
 
 bool Parser::typeCheckInst(Inst::Kind IK, unsigned &Width,
-                           std::vector<Inst *> &Ops,
-                           std::string &ErrStr) {
+                           std::vector<Inst *> &Ops, std::string &ErrStr) {
   unsigned MinOps = 2, MaxOps = 2;
   llvm::MutableArrayRef<Inst *> OpsMatchingWidths = Ops;
 
@@ -632,8 +630,8 @@ bool Parser::typeCheckInst(Inst::Kind IK, unsigned &Width,
 
     for (auto Op : Ops) {
       if (isOverflow(Op->K)) {
-        ErrStr = std::string("overflow intrinsic cannot be an operand of ") + Inst::getKindName(IK) +
-                 std::string(" instruction");
+        ErrStr = std::string("overflow intrinsic cannot be an operand of ") +
+                 Inst::getKindName(IK) + std::string(" instruction");
         return false;
       }
     }
@@ -681,31 +679,31 @@ bool Parser::typeCheckInst(Inst::Kind IK, unsigned &Width,
   case Inst::ExtractValue:
     if (Ops[1]->Val == 0) {
       switch (Ops[0]->K) {
-        case Inst::SAddWithOverflow:
-        case Inst::UAddWithOverflow:
-        case Inst::SSubWithOverflow:
-        case Inst::USubWithOverflow:
-        case Inst::SMulWithOverflow:
-        case Inst::UMulWithOverflow:
-          ExpectedWidth = Ops[0]->Ops[0]->Width;
-          break;
-        default:
-          ErrStr = "extract value expects an aggregate type";
-          return false;
+      case Inst::SAddWithOverflow:
+      case Inst::UAddWithOverflow:
+      case Inst::SSubWithOverflow:
+      case Inst::USubWithOverflow:
+      case Inst::SMulWithOverflow:
+      case Inst::UMulWithOverflow:
+        ExpectedWidth = Ops[0]->Ops[0]->Width;
+        break;
+      default:
+        ErrStr = "extract value expects an aggregate type";
+        return false;
       }
     } else if (Ops[1]->Val == 1) {
       switch (Ops[0]->K) {
-        case Inst::SAddWithOverflow:
-        case Inst::UAddWithOverflow:
-        case Inst::SSubWithOverflow:
-        case Inst::USubWithOverflow:
-        case Inst::SMulWithOverflow:
-        case Inst::UMulWithOverflow:
-          ExpectedWidth = 1;
-          break;
-        default:
-          ErrStr = "extract value expects an aggregate type";
-          return false;
+      case Inst::SAddWithOverflow:
+      case Inst::UAddWithOverflow:
+      case Inst::SSubWithOverflow:
+      case Inst::USubWithOverflow:
+      case Inst::SMulWithOverflow:
+      case Inst::UMulWithOverflow:
+        ExpectedWidth = 1;
+        break;
+      default:
+        ErrStr = "extract value expects an aggregate type";
+        return false;
       }
     } else {
       ErrStr = "extractvalue inst doesn't expect index value other than 0 or 1";
@@ -803,10 +801,11 @@ bool Parser::parseInstAttribute(std::string &ErrStr, Inst *LHS) {
         return false;
       }
       if (LHS->Width != CurTok.Len) {
-        ErrStr = makeErrStr("demandedBits pattern must be of same length as infer operand width");
+        ErrStr = makeErrStr("demandedBits pattern must be of same length as "
+                            "infer operand width");
         return false;
       }
-      std::string DemandedBitsPattern = CurTok.str();
+      std::string DemandedBitsPattern = CurTok.str().str();
       for (unsigned i = 0; i < LHS->Width; ++i) {
         if (DemandedBitsPattern[i] == '1') {
           DemandedBitsVal += ConstOne.shl(DemandedBitsPattern.length() - 1 - i);
@@ -849,522 +848,562 @@ bool Parser::parseInstAttribute(std::string &ErrStr, Inst *LHS) {
 
 bool Parser::parseLine(std::string &ErrStr) {
   switch (CurTok.K) {
-    case Token::Ident:
-      if (CurTok.str() == "cand") {
-        if (RK == ReplacementKind::ParseLHS) {
-          ErrStr = makeErrStr("Not expecting 'cand' when parsing LHS");
-          return false;
-        }
-        if (RK == ReplacementKind::ParseRHS) {
-          ErrStr = makeErrStr("Not expecting 'cand' when parsing RHS");
-          return false;
-        }
-        if (!consumeToken(ErrStr)) return false;
-        InstMapping Cand = parseInstMapping(ErrStr);
-        if (!ErrStr.empty()) return false;
-        if (!parseInstAttribute(ErrStr, Cand.LHS))
-          return false;
+  case Token::Ident:
+    if (CurTok.str() == "cand") {
+      if (RK == ReplacementKind::ParseLHS) {
+        ErrStr = makeErrStr("Not expecting 'cand' when parsing LHS");
+        return false;
+      }
+      if (RK == ReplacementKind::ParseRHS) {
+        ErrStr = makeErrStr("Not expecting 'cand' when parsing RHS");
+        return false;
+      }
+      if (!consumeToken(ErrStr))
+        return false;
+      InstMapping Cand = parseInstMapping(ErrStr);
+      if (!ErrStr.empty())
+        return false;
+      if (!parseInstAttribute(ErrStr, Cand.LHS))
+        return false;
 
-        if (isOverflow(Cand.LHS->K) || isOverflow(Cand.RHS->K)) {
-          ErrStr = makeErrStr("overflow intrinsic cannot be an operand of cand instruction");
-          return false;
-        }
+      if (isOverflow(Cand.LHS->K) || isOverflow(Cand.RHS->K)) {
+        ErrStr = makeErrStr(
+            "overflow intrinsic cannot be an operand of cand instruction");
+        return false;
+      }
 
-        Reps.push_back(ParsedReplacement{Cand, std::move(PCs),
+      Reps.push_back(ParsedReplacement{Cand, std::move(PCs), std::move(BPCs)});
+      nextReplacement();
+
+      return true;
+    } else if (CurTok.str() == "infer") {
+      if (RK == ReplacementKind::ParseRHS) {
+        ErrStr = makeErrStr("Not expecting 'infer' when parsing RHS");
+        return false;
+      }
+      if (!consumeToken(ErrStr))
+        return false;
+      if (CurTok.K != Token::ValName) {
+        ErrStr = makeErrStr("unexpected infer operand type");
+        return false;
+      }
+      if (LHS) {
+        ErrStr = makeErrStr("Not expecting a second 'infer'");
+        return false;
+      }
+      LHS = parseInst(ErrStr);
+      if (!LHS)
+        return false;
+      if (!parseInstAttribute(ErrStr, LHS))
+        return false;
+
+      if (isOverflow(LHS->K)) {
+        ErrStr = makeErrStr(
+            "overflow intrinsic cannot be an operand of infer instruction");
+        return false;
+      }
+
+      if (RK == ReplacementKind::ParseLHS) {
+        Reps.push_back(ParsedReplacement{InstMapping(LHS, 0), std::move(PCs),
                                          std::move(BPCs)});
         nextReplacement();
+      }
 
-        return true;
-      } else if (CurTok.str() == "infer") {
-        if (RK == ReplacementKind::ParseRHS) {
-          ErrStr = makeErrStr("Not expecting 'infer' when parsing RHS");
-          return false;
-        }
-        if (!consumeToken(ErrStr)) return false;
-        if (CurTok.K != Token::ValName) {
-          ErrStr = makeErrStr("unexpected infer operand type");
-          return false;
-        }
-        if (LHS) {
-          ErrStr = makeErrStr("Not expecting a second 'infer'");
-          return false;
-        }
-        LHS = parseInst(ErrStr);
-        if (!LHS)
-          return false;
-        if (!parseInstAttribute(ErrStr, LHS))
-          return false;
+      return true;
+    } else if (CurTok.str() == "result") {
+      if (RK == ReplacementKind::ParseLHS) {
+        ErrStr = makeErrStr("Not expecting 'result' when parsing LHS");
+        return false;
+      }
+      if (RK != ReplacementKind::ParseRHS && !LHS) {
+        ErrStr = makeErrStr("Not expecting 'result' before 'infer'");
+        return false;
+      }
+      if (!consumeToken(ErrStr))
+        return false;
+      if (CurTok.K == Token::UntypedInt) {
+        ErrStr = makeErrStr("expecting width to be specified for int operand "
+                            "in 'result' instruction");
+        return false;
+      }
+      Inst *RHS = parseInst(ErrStr);
+      if (!RHS)
+        return false;
+      if (LHS && (LHS->Width != RHS->Width)) {
+        ErrStr = makeErrStr("width of result and infer operands mismatch");
+        return false;
+      }
+      InstMapping Cand = InstMapping(LHS, RHS);
 
-        if (isOverflow(LHS->K)) {
-          ErrStr = makeErrStr("overflow intrinsic cannot be an operand of infer instruction");
-          return false;
-        }
+      Reps.push_back(ParsedReplacement{Cand, std::move(PCs), std::move(BPCs)});
+      nextReplacement();
 
-        if (RK == ReplacementKind::ParseLHS) {
-          Reps.push_back(ParsedReplacement{InstMapping(LHS, 0),
-                                           std::move(PCs), std::move(BPCs)});
-          nextReplacement();
-        }
+      return true;
+    } else if (CurTok.str() == "pc") {
+      if (!consumeToken(ErrStr))
+        return false;
+      InstMapping PC = parseInstMapping(ErrStr);
+      if (!ErrStr.empty())
+        return false;
 
-        return true;
-      } else if (CurTok.str() == "result") {
-        if (RK == ReplacementKind::ParseLHS) {
-          ErrStr = makeErrStr("Not expecting 'result' when parsing LHS");
-          return false;
-        }
-        if (RK != ReplacementKind::ParseRHS && !LHS) {
-          ErrStr = makeErrStr("Not expecting 'result' before 'infer'");
-          return false;
-        }
-        if (!consumeToken(ErrStr)) return false;
-        if (CurTok.K == Token::UntypedInt) {
-          ErrStr = makeErrStr("expecting width to be specified for int operand in 'result' instruction");
-          return false;
-        }
-        Inst *RHS = parseInst(ErrStr);
-        if (!RHS)
-          return false;
-        if (LHS && (LHS->Width != RHS->Width)) {
-          ErrStr = makeErrStr("width of result and infer operands mismatch");
-          return false;
-        }
-        InstMapping Cand = InstMapping(LHS, RHS);
+      if (isOverflow(PC.LHS->K)) {
+        ErrStr = makeErrStr(
+            "overflow intrinsic cannot be an operand of pc instruction");
+        return false;
+      }
 
-        Reps.push_back(ParsedReplacement{Cand, std::move(PCs),
-                                         std::move(BPCs)});
-        nextReplacement();
+      PCs.push_back(PC);
 
-        return true;
-      } else if (CurTok.str() == "pc") {
-        if (!consumeToken(ErrStr)) return false;
-        InstMapping PC = parseInstMapping(ErrStr);
-        if (!ErrStr.empty()) return false;
-
-        if (isOverflow(PC.LHS->K)) {
-          ErrStr = makeErrStr("overflow intrinsic cannot be an operand of pc instruction");
-          return false;
-        }
-
-        PCs.push_back(PC);
-
-        return true;
-      } else if (CurTok.str() == "blockpc") {
-        if (!consumeToken(ErrStr)) return false;
-        if (CurTok.K != Token::ValName) {
-          ErrStr = makeErrStr("expected block var");
-          return false;
-        }
-        StringRef InstName = CurTok.Name;
-        unsigned InstWidth = CurTok.Width;
-        if (InstWidth != 0) {
-          ErrStr = makeErrStr("blocks may not have a width");
-          return false;
-        }
-        if (Context.getInst(CurTok.Name)) {
-          ErrStr = makeErrStr(std::string("%") + InstName.str() +
+      return true;
+    } else if (CurTok.str() == "blockpc") {
+      if (!consumeToken(ErrStr))
+        return false;
+      if (CurTok.K != Token::ValName) {
+        ErrStr = makeErrStr("expected block var");
+        return false;
+      }
+      StringRef InstName = CurTok.Name;
+      unsigned InstWidth = CurTok.Width;
+      if (InstWidth != 0) {
+        ErrStr = makeErrStr("blocks may not have a width");
+        return false;
+      }
+      if (Context.getInst(CurTok.Name)) {
+        ErrStr = makeErrStr(std::string("%") + InstName.str() +
                             " is declared as an inst");
-          return false;
-        }
-        Block *B = Context.getBlock(InstName);
-        if (B == 0) {
-          ErrStr = makeErrStr(std::string("block %") + InstName.str() +
-                              " is undeclared");
-          return false;
-        }
-        if (!consumeToken(ErrStr)) return false;
+        return false;
+      }
+      Block *B = Context.getBlock(InstName);
+      if (B == 0) {
+        ErrStr = makeErrStr(std::string("block %") + InstName.str() +
+                            " is undeclared");
+        return false;
+      }
+      if (!consumeToken(ErrStr))
+        return false;
 
-        if (CurTok.K != Token::UntypedInt) {
-          ErrStr = makeErrStr(std::string("expected block number"));
-          return false;
-        }
-        unsigned CurrIdx = CurTok.Val.getLimitedValue();
-        if (!consumeToken(ErrStr)) return false;
+      if (CurTok.K != Token::UntypedInt) {
+        ErrStr = makeErrStr(std::string("expected block number"));
+        return false;
+      }
+      unsigned CurrIdx = CurTok.Val.getLimitedValue();
+      if (!consumeToken(ErrStr))
+        return false;
 
-        InstMapping PC = parseInstMapping(ErrStr);
-        if (!ErrStr.empty()) return false;
+      InstMapping PC = parseInstMapping(ErrStr);
+      if (!ErrStr.empty())
+        return false;
 
-        if (isOverflow(PC.LHS->K)) {
-          ErrStr = makeErrStr("overflow intrinsic cannot be an operand of blockpc instruction");
-          return false;
-        }
+      if (isOverflow(PC.LHS->K)) {
+        ErrStr = makeErrStr(
+            "overflow intrinsic cannot be an operand of blockpc instruction");
+        return false;
+      }
 
-        std::map<Block *, unsigned>::iterator IdxIt = BlockPCIdxMap.find(B);
-        if (IdxIt == BlockPCIdxMap.end()) {
-          BlockPCIdxMap[B] = CurrIdx;
-        }
-        else {
-          assert(BPCs.size() && "Empty BlockPCs!");
-          if (CurrIdx > IdxIt->second)
-            BlockPCIdxMap[B] = CurrIdx;
-        }
-        BPCs.emplace_back(B, CurrIdx, PC);
-
-        return true;
+      std::map<Block *, unsigned>::iterator IdxIt = BlockPCIdxMap.find(B);
+      if (IdxIt == BlockPCIdxMap.end()) {
+        BlockPCIdxMap[B] = CurrIdx;
       } else {
-        ErrStr = makeErrStr(std::string("unexpected identifier: '") +
+        assert(BPCs.size() && "Empty BlockPCs!");
+        if (CurrIdx > IdxIt->second)
+          BlockPCIdxMap[B] = CurrIdx;
+      }
+      BPCs.emplace_back(B, CurrIdx, PC);
+
+      return true;
+    } else {
+      ErrStr = makeErrStr(std::string("unexpected identifier: '") +
+                          CurTok.str().str() + "'");
+      return false;
+    }
+
+  case Token::ValName: {
+    StringRef InstName = CurTok.Name;
+    unsigned InstWidth = CurTok.Width;
+
+    if (Context.getInst(InstName)) {
+      ErrStr = makeErrStr(std::string("%") + InstName.str() +
+                          " already declared as an inst");
+      return false;
+    }
+    if (Context.getBlock(InstName)) {
+      ErrStr = makeErrStr(std::string("%") + InstName.str() +
+                          " already declared as a block");
+      return false;
+    }
+
+    TokenPos TP = L.getTokenPos(CurTok);
+    if (!consumeToken(ErrStr))
+      return false;
+
+    if (CurTok.K != Token::Eq) {
+      ErrStr = makeErrStr("expected '='");
+      return false;
+    }
+    if (!consumeToken(ErrStr))
+      return false;
+
+    if (CurTok.K != Token::Ident) {
+      ErrStr = makeErrStr("expected identifier");
+      return false;
+    }
+
+    Inst::Kind IK = Inst::getKind(CurTok.str().str());
+
+    if (IK == Inst::None) {
+      if (CurTok.str() == "block") {
+        if (InstWidth != 0) {
+          ErrStr = makeErrStr(TP, "blocks may not have a width");
+          return false;
+        }
+
+        if (!consumeToken(ErrStr))
+          return false;
+        if (CurTok.K != Token::UntypedInt) {
+          ErrStr = makeErrStr(TP, "block must be followed by number of preds");
+          return false;
+        }
+        unsigned Preds = CurTok.Val.getLimitedValue();
+        if (Preds > MaxPreds) {
+          ErrStr = makeErrStr(std::string(std::to_string(Preds) +
+                                          " is too many block predecessors"));
+          return false;
+        }
+        Context.setBlock(InstName, IC.createBlock(Preds));
+        return consumeToken(ErrStr);
+      } else {
+        ErrStr = makeErrStr(std::string("unexpected inst kind: '") +
                             CurTok.str().str() + "'");
         return false;
       }
+    }
 
-    case Token::ValName: {
-      StringRef InstName = CurTok.Name;
-      unsigned InstWidth = CurTok.Width;
+    if (IK == Inst::Var && InstWidth == 0) {
+      ErrStr = makeErrStr(TP, "var must have a width");
+      return false;
+    }
 
-      if (Context.getInst(InstName)) {
-        ErrStr = makeErrStr(std::string("%") + InstName.str() +
-                            " already declared as an inst");
-        return false;
-      }
-      if (Context.getBlock(InstName)) {
-        ErrStr = makeErrStr(std::string("%") + InstName.str() +
-                            " already declared as a block");
-        return false;
-      }
+    if (!consumeToken(ErrStr))
+      return false;
 
-      TokenPos TP = L.getTokenPos(CurTok);
-      if (!consumeToken(ErrStr)) return false;
+    Block *B = 0;
 
-      if (CurTok.K != Token::Eq) {
-        ErrStr = makeErrStr("expected '='");
-        return false;
-      }
-      if (!consumeToken(ErrStr)) return false;
-
-      if (CurTok.K != Token::Ident) {
-        ErrStr = makeErrStr("expected identifier");
-        return false;
-      }
-
-      Inst::Kind IK = Inst::getKind(CurTok.str());
-
-      if (IK == Inst::None) {
-        if (CurTok.str() == "block") {
-          if (InstWidth != 0) {
-            ErrStr = makeErrStr(TP, "blocks may not have a width");
-            return false;
-          }
-
+    if (IK == Inst::Var || IK == Inst::ReservedConst) {
+      llvm::APInt Zero(InstWidth, 0, false), One(InstWidth, 0, false),
+          ConstOne(InstWidth, 1, false), Lower(InstWidth, 0, false),
+          Upper(InstWidth, 0, false);
+      llvm::ConstantRange Range(InstWidth, /*isFullSet*/ true);
+      bool NonZero = false, NonNegative = false, PowOfTwo = false,
+           Negative = false, hasExternalUses = false;
+      unsigned SignBits = 0;
+      while (CurTok.K != Token::ValName && CurTok.K != Token::Ident &&
+             CurTok.K != Token::Eof) {
+        if (CurTok.K == Token::OpenParen) {
           if (!consumeToken(ErrStr))
             return false;
-          if (CurTok.K != Token::UntypedInt) {
-            ErrStr = makeErrStr(TP, "block must be followed by number of preds");
-            return false;
-          }
-          unsigned Preds = CurTok.Val.getLimitedValue();
-          if (Preds > MaxPreds) {
-            ErrStr = makeErrStr(std::string(std::to_string(Preds) +
-                                            " is too many block predecessors"));
-            return false;
-          }
-          Context.setBlock(InstName, IC.createBlock(Preds));
-          return consumeToken(ErrStr);
-        } else {
-          ErrStr = makeErrStr(std::string("unexpected inst kind: '") +
-                              CurTok.str().str() + "'");
-          return false;
-        }
-      }
-
-      if (IK == Inst::Var && InstWidth == 0) {
-        ErrStr = makeErrStr(TP, "var must have a width");
-        return false;
-      }
-
-      if (!consumeToken(ErrStr)) return false;
-
-      Block *B = 0;
-
-      if (IK == Inst::Var || IK == Inst::ReservedConst) {
-        llvm::APInt Zero(InstWidth, 0, false), One(InstWidth, 0, false),
-                    ConstOne(InstWidth, 1, false), Lower(InstWidth, 0, false),
-                    Upper(InstWidth, 0, false);
-        llvm::ConstantRange Range(InstWidth, /*isFullSet*/true);
-        bool NonZero = false, NonNegative = false, PowOfTwo = false, Negative = false,
-          hasExternalUses = false;
-        unsigned SignBits = 0;
-        while (CurTok.K != Token::ValName && CurTok.K != Token::Ident && CurTok.K != Token::Eof) {
-          if (CurTok.K == Token::OpenParen) {
-            if (!consumeToken(ErrStr))
+          switch (CurTok.K) {
+          case Token::KnownBits:
+            if (InstWidth != CurTok.PatternString.length()) {
+              ErrStr = makeErrStr(
+                  TP, "knownbits pattern must be of same length as var width");
               return false;
-            switch (CurTok.K) {
-              case Token::KnownBits:
-                if (InstWidth != CurTok.PatternString.length()) {
-                  ErrStr = makeErrStr(TP, "knownbits pattern must be of same length as var width");
-                  return false;
-                }
-                for (unsigned i = 0; i < InstWidth; ++i) {
-                  if (CurTok.PatternString[i] == '0')
-                    Zero += ConstOne.shl(CurTok.PatternString.length() - 1 - i);
-                  else if (CurTok.PatternString[i] == '1')
-                    One += ConstOne.shl(CurTok.PatternString.length() - 1 - i);
-                  else if (CurTok.PatternString[i] != 'x') {
-                    ErrStr = makeErrStr(TP, "invalid knownBits string");
-                    return false;
-                  }
-                }
-                if (!consumeToken(ErrStr))
-                  return false;
-                break;
-              case Token::Ident:
-                if (CurTok.str() == "powerOfTwo") {
-                  PowOfTwo = true;
-                  if (!consumeToken(ErrStr))
-                    return false;
-                } else if (CurTok.str() == "negative") {
-                  Negative = true;
-                  if (!consumeToken(ErrStr))
-                    return false;
-                } else if (CurTok.str() == "nonNegative") {
-                  NonNegative = true;
-                  if (!consumeToken(ErrStr))
-                    return false;
-                } else if (CurTok.str() == "nonZero") {
-                  NonZero = true;
-                  if (!consumeToken(ErrStr))
-                    return false;
-                } else if (CurTok.str() == "signBits") {
-                  if (!consumeToken(ErrStr))
-                    return false;
-                  if (CurTok.K != Token::Eq) {
-                    ErrStr = makeErrStr(TP, "expected '=' for number of signBits");
-                    return false;
-                  }
-                  if (!consumeToken(ErrStr))
-                    return false;
-                  if (CurTok.K != Token::UntypedInt) {
-                    ErrStr = makeErrStr(TP, "expected positive integer value for number of sign bits");
-                    return false;
-                  }
-                  SignBits = CurTok.Val.getLimitedValue();
-                  if (SignBits == 0) {
-                    ErrStr = makeErrStr(TP, "expected positive integer value for number of sign bits");
-                    return false;
-                  }
-                  if (SignBits > InstWidth) {
-                    ErrStr = makeErrStr(TP, "number of sign bits can't exceed instruction width and expects positive integer value");
-                    return false;
-                  }
-                  if (!consumeToken(ErrStr))
-                    return false;
-                } else if (CurTok.str() == "range") {
-                  if (!consumeToken(ErrStr))
-                    return false;
-                  if (CurTok.K != Token::Eq) {
-                    ErrStr = makeErrStr(TP, "expected '=' for range as 'range='");
-                    return false;
-                  }
-
-                  if (!consumeToken(ErrStr))
-                    return false;
-                  if (CurTok.K != Token::OpenBracket) {
-                    ErrStr = makeErrStr(TP, "expected '[' to specify lower bound of range");
-                    return false;
-                  }
-
-                  if (!consumeToken(ErrStr))
-                    return false;
-                  if (CurTok.K != Token::UntypedInt) {
-                    ErrStr = makeErrStr(TP, "expected lower bound of range");
-                    return false;
-                  }
-                  Lower = CurTok.Val;
-
-                  if (!Lower.isSignedIntN(InstWidth) && (Lower.isNegative() ||
-                      (!Lower.isNegative() && !Lower.isIntN(InstWidth)))) {
-                    ErrStr = makeErrStr(TP, "Lower bound is out of range");
-                    return false;
-                  }
-                  if (Lower.getBitWidth() != InstWidth)
-                    Lower = Lower.sextOrTrunc(InstWidth);
-
-                  if (!consumeToken(ErrStr))
-                    return false;
-                  if (CurTok.K != Token::Comma) {
-                    ErrStr = makeErrStr(TP, "expected ',' after lower bound of range");
-                    return false;
-                  }
-
-                  if (!consumeToken(ErrStr))
-                    return false;
-                  if (CurTok.K != Token::UntypedInt) {
-                    ErrStr = makeErrStr(TP, "expected upper bound of range");
-                    return false;
-                  }
-                  Upper = CurTok.Val;
-
-                  if (!Upper.isSignedIntN(InstWidth) && (Upper.isNegative() ||
-                      (!Upper.isNegative() && !Upper.isIntN(InstWidth)))) {
-                    ErrStr = makeErrStr(TP, "Upper bound is out of range");
-                    return false;
-                  }
-                  if (Upper.getBitWidth() != InstWidth)
-                    Upper = Upper.sextOrTrunc(InstWidth);
-
-                  if (Lower == Upper && !Lower.isMinValue() && !Lower.isMaxValue()) {
-                    ErrStr = makeErrStr(TP, "range with lower == upper is invalid unless it is empty or full set");
-                    return false;
-                  }
-
-                  if (!consumeToken(ErrStr))
-                    return false;
-                  if (CurTok.K != Token::CloseParen) {
-                    ErrStr = makeErrStr(TP, "expected ')' after upper bound of range");
-                    return false;
-                  }
-                  if (!consumeToken(ErrStr))
-                    return false;
-                  Range = llvm::ConstantRange(Lower, Upper);
-                } else {
-                  ErrStr = makeErrStr(TP, "invalid data flow fact type");
-                  return false;
-                }
-                break;
-              default:
-                ErrStr = makeErrStr(TP, "invalid data flow fact type");
+            }
+            for (unsigned i = 0; i < InstWidth; ++i) {
+              if (CurTok.PatternString[i] == '0')
+                Zero += ConstOne.shl(CurTok.PatternString.length() - 1 - i);
+              else if (CurTok.PatternString[i] == '1')
+                One += ConstOne.shl(CurTok.PatternString.length() - 1 - i);
+              else if (CurTok.PatternString[i] != 'x') {
+                ErrStr = makeErrStr(TP, "invalid knownBits string");
                 return false;
-                break;
-            }
-            if (CurTok.K != Token::CloseParen) {
-              ErrStr = makeErrStr(TP, "expected ')' to complete data flow fact");
-              return false;
+              }
             }
             if (!consumeToken(ErrStr))
               return false;
-          }
-        }
-        Inst *I;
-        if (IK == Inst::Var)
-          I = IC.createVar(InstWidth, InstName, Range, Zero, One, NonZero,
-                           NonNegative, PowOfTwo, Negative, SignBits, 0);
-        else if (IK == Inst::ReservedConst)
-          I = IC.createVar(InstWidth, InstName, Range, Zero, One, NonZero,
-                           NonNegative, PowOfTwo, Negative, SignBits,
-                           ++ReservedConstCounter);
+            break;
+          case Token::Ident:
+            if (CurTok.str() == "powerOfTwo") {
+              PowOfTwo = true;
+              if (!consumeToken(ErrStr))
+                return false;
+            } else if (CurTok.str() == "negative") {
+              Negative = true;
+              if (!consumeToken(ErrStr))
+                return false;
+            } else if (CurTok.str() == "nonNegative") {
+              NonNegative = true;
+              if (!consumeToken(ErrStr))
+                return false;
+            } else if (CurTok.str() == "nonZero") {
+              NonZero = true;
+              if (!consumeToken(ErrStr))
+                return false;
+            } else if (CurTok.str() == "signBits") {
+              if (!consumeToken(ErrStr))
+                return false;
+              if (CurTok.K != Token::Eq) {
+                ErrStr = makeErrStr(TP, "expected '=' for number of signBits");
+                return false;
+              }
+              if (!consumeToken(ErrStr))
+                return false;
+              if (CurTok.K != Token::UntypedInt) {
+                ErrStr = makeErrStr(
+                    TP,
+                    "expected positive integer value for number of sign bits");
+                return false;
+              }
+              SignBits = CurTok.Val.getLimitedValue();
+              if (SignBits == 0) {
+                ErrStr = makeErrStr(
+                    TP,
+                    "expected positive integer value for number of sign bits");
+                return false;
+              }
+              if (SignBits > InstWidth) {
+                ErrStr = makeErrStr(
+                    TP, "number of sign bits can't exceed instruction width "
+                        "and expects positive integer value");
+                return false;
+              }
+              if (!consumeToken(ErrStr))
+                return false;
+            } else if (CurTok.str() == "range") {
+              if (!consumeToken(ErrStr))
+                return false;
+              if (CurTok.K != Token::Eq) {
+                ErrStr = makeErrStr(TP, "expected '=' for range as 'range='");
+                return false;
+              }
 
-        Context.setInst(InstName, I);
-        return true;
-      }
+              if (!consumeToken(ErrStr))
+                return false;
+              if (CurTok.K != Token::OpenBracket) {
+                ErrStr = makeErrStr(
+                    TP, "expected '[' to specify lower bound of range");
+                return false;
+              }
 
-      if (IK == Inst::Phi) {
-        if (CurTok.K != Token::ValName) {
-          ErrStr = makeErrStr("expected block number");
-          return false;
-        }
-        if (CurTok.Width != 0) {
-          ErrStr = makeErrStr("blocks may not have a width");
-          return false;
-        }
-        if (!(B = Context.getBlock(CurTok.Name))) {
-          ErrStr =
-              makeErrStr(std::string("%") + InstName.str() + " is not a block");
-          return false;
-        }
-        if (!consumeToken(ErrStr)) return false;
+              if (!consumeToken(ErrStr))
+                return false;
+              if (CurTok.K != Token::UntypedInt) {
+                ErrStr = makeErrStr(TP, "expected lower bound of range");
+                return false;
+              }
+              Lower = CurTok.Val;
 
-        if (CurTok.K != Token::Comma) {
-          ErrStr = makeErrStr("expected ','");
-          return false;
-        }
-        if (!consumeToken(ErrStr)) return false;
-      } else if (IK == Inst::Hole) {
-        Inst *I = IC.createHole(InstWidth);
-        Context.setInst(InstName, I);
-        return true;
-      }
+              if (!Lower.isSignedIntN(InstWidth) &&
+                  (Lower.isNegative() ||
+                   (!Lower.isNegative() && !Lower.isIntN(InstWidth)))) {
+                ErrStr = makeErrStr(TP, "Lower bound is out of range");
+                return false;
+              }
+              if (Lower.getBitWidth() != InstWidth)
+                Lower = Lower.sextOrTrunc(InstWidth);
 
-      std::vector<Inst *> Ops;
-      bool hasExternalUses = false;
+              if (!consumeToken(ErrStr))
+                return false;
+              if (CurTok.K != Token::Comma) {
+                ErrStr =
+                    makeErrStr(TP, "expected ',' after lower bound of range");
+                return false;
+              }
 
-      while (1) {
-        Inst *I = parseInst(ErrStr);
-        if (!I)
-          return false;
+              if (!consumeToken(ErrStr))
+                return false;
+              if (CurTok.K != Token::UntypedInt) {
+                ErrStr = makeErrStr(TP, "expected upper bound of range");
+                return false;
+              }
+              Upper = CurTok.Val;
 
-        Ops.push_back(I);
+              if (!Upper.isSignedIntN(InstWidth) &&
+                  (Upper.isNegative() ||
+                   (!Upper.isNegative() && !Upper.isIntN(InstWidth)))) {
+                ErrStr = makeErrStr(TP, "Upper bound is out of range");
+                return false;
+              }
+              if (Upper.getBitWidth() != InstWidth)
+                Upper = Upper.sextOrTrunc(InstWidth);
 
-        if (CurTok.K != Token::Comma) {
-          if (CurTok.K == Token::OpenParen) {
-            if (!consumeToken(ErrStr))
-              return false;
-            if (CurTok.K != Token::Ident || CurTok.str() != "hasExternalUses") {
-              ErrStr = makeErrStr(TP, "expected hasExternalUses token");
+              if (Lower == Upper && !Lower.isMinValue() &&
+                  !Lower.isMaxValue()) {
+                ErrStr = makeErrStr(TP, "range with lower == upper is invalid "
+                                        "unless it is empty or full set");
+                return false;
+              }
+
+              if (!consumeToken(ErrStr))
+                return false;
+              if (CurTok.K != Token::CloseParen) {
+                ErrStr =
+                    makeErrStr(TP, "expected ')' after upper bound of range");
+                return false;
+              }
+              if (!consumeToken(ErrStr))
+                return false;
+              Range = llvm::ConstantRange(Lower, Upper);
+            } else {
+              ErrStr = makeErrStr(TP, "invalid data flow fact type");
               return false;
             }
-            if (!consumeToken(ErrStr))
-              return false;
-            if (CurTok.K != Token::CloseParen) {
-              ErrStr = makeErrStr(TP, "expected ')' to complete external uses string");
-              return false;
-            }
-            if (!consumeToken(ErrStr))
-              return false;
-            hasExternalUses = true;
-          }
-          break;
-        }
-        if (!consumeToken(ErrStr)) return false;
-      }
-
-      Inst *I;
-      if (IK == Inst::Phi) {
-        assert(B);
-        if (!typeCheckPhi(InstWidth, B, Ops, ErrStr)) {
-          ErrStr = makeErrStr(TP, ErrStr);
-          return false;
-        }
-        I = IC.getPhi(B, Ops);
-      } else {
-        if (!typeCheckInst(IK, InstWidth, Ops, ErrStr)) {
-          ErrStr = makeErrStr(TP, ErrStr);
-          return false;
-        }
-        switch (IK) {
-          case Inst::SAddWithOverflow:
-            I = IC.getInst(IK, InstWidth, {IC.getInst(Inst::Add, Ops[0]->Width, Ops),
-                           IC.getInst(Inst::SAddO, 1, Ops)});
-            break;
-          case Inst::UAddWithOverflow:
-            I = IC.getInst(IK, InstWidth, {IC.getInst(Inst::Add, Ops[0]->Width, Ops),
-                           IC.getInst(Inst::UAddO, 1, Ops)});
-            break;
-          case Inst::SSubWithOverflow:
-            I = IC.getInst(IK, InstWidth, {IC.getInst(Inst::Sub, Ops[0]->Width, Ops),
-                           IC.getInst(Inst::SSubO, 1, Ops)});
-            break;
-          case Inst::USubWithOverflow:
-            I = IC.getInst(IK, InstWidth, {IC.getInst(Inst::Sub, Ops[0]->Width, Ops),
-                           IC.getInst(Inst::USubO, 1, Ops)});
-            break;
-          case Inst::SMulWithOverflow:
-            I = IC.getInst(IK, InstWidth, {IC.getInst(Inst::Mul, Ops[0]->Width, Ops),
-                           IC.getInst(Inst::SMulO, 1, Ops)});
-            break;
-          case Inst::UMulWithOverflow:
-            I = IC.getInst(IK, InstWidth, {IC.getInst(Inst::Mul, Ops[0]->Width, Ops),
-                           IC.getInst(Inst::UMulO, 1, Ops)});
             break;
           default:
-            I = IC.getInst(IK, InstWidth, Ops);
+            ErrStr = makeErrStr(TP, "invalid data flow fact type");
+            return false;
             break;
+          }
+          if (CurTok.K != Token::CloseParen) {
+            ErrStr = makeErrStr(TP, "expected ')' to complete data flow fact");
+            return false;
+          }
+          if (!consumeToken(ErrStr))
+            return false;
         }
       }
+      Inst *I;
+      if (IK == Inst::Var)
+        I = IC.createVar(InstWidth, InstName, Range, Zero, One, NonZero,
+                         NonNegative, PowOfTwo, Negative, SignBits, 0);
+      else if (IK == Inst::ReservedConst)
+        I = IC.createVar(InstWidth, InstName, Range, Zero, One, NonZero,
+                         NonNegative, PowOfTwo, Negative, SignBits,
+                         ++ReservedConstCounter);
 
-      if (hasExternalUses)
-        ExternalUsesSet.insert(I);
-      for (auto EU: ExternalUsesSet)
-        I->DepsWithExternalUses.insert(EU);
       Context.setInst(InstName, I);
       return true;
     }
 
-    default:
-      ErrStr =
+    if (IK == Inst::Phi) {
+      if (CurTok.K != Token::ValName) {
+        ErrStr = makeErrStr("expected block number");
+        return false;
+      }
+      if (CurTok.Width != 0) {
+        ErrStr = makeErrStr("blocks may not have a width");
+        return false;
+      }
+      if (!(B = Context.getBlock(CurTok.Name))) {
+        ErrStr =
+            makeErrStr(std::string("%") + InstName.str() + " is not a block");
+        return false;
+      }
+      if (!consumeToken(ErrStr))
+        return false;
+
+      if (CurTok.K != Token::Comma) {
+        ErrStr = makeErrStr("expected ','");
+        return false;
+      }
+      if (!consumeToken(ErrStr))
+        return false;
+    } else if (IK == Inst::Hole) {
+      Inst *I = IC.createHole(InstWidth);
+      Context.setInst(InstName, I);
+      return true;
+    }
+
+    std::vector<Inst *> Ops;
+    bool hasExternalUses = false;
+
+    while (1) {
+      Inst *I = parseInst(ErrStr);
+      if (!I)
+        return false;
+
+      Ops.push_back(I);
+
+      if (CurTok.K != Token::Comma) {
+        if (CurTok.K == Token::OpenParen) {
+          if (!consumeToken(ErrStr))
+            return false;
+          if (CurTok.K != Token::Ident || CurTok.str() != "hasExternalUses") {
+            ErrStr = makeErrStr(TP, "expected hasExternalUses token");
+            return false;
+          }
+          if (!consumeToken(ErrStr))
+            return false;
+          if (CurTok.K != Token::CloseParen) {
+            ErrStr =
+                makeErrStr(TP, "expected ')' to complete external uses string");
+            return false;
+          }
+          if (!consumeToken(ErrStr))
+            return false;
+          hasExternalUses = true;
+        }
+        break;
+      }
+      if (!consumeToken(ErrStr))
+        return false;
+    }
+
+    Inst *I;
+    if (IK == Inst::Phi) {
+      assert(B);
+      if (!typeCheckPhi(InstWidth, B, Ops, ErrStr)) {
+        ErrStr = makeErrStr(TP, ErrStr);
+        return false;
+      }
+      I = IC.getPhi(B, Ops);
+    } else {
+      if (!typeCheckInst(IK, InstWidth, Ops, ErrStr)) {
+        ErrStr = makeErrStr(TP, ErrStr);
+        return false;
+      }
+      switch (IK) {
+      case Inst::SAddWithOverflow:
+        I = IC.getInst(IK, InstWidth,
+                       {IC.getInst(Inst::Add, Ops[0]->Width, Ops),
+                        IC.getInst(Inst::SAddO, 1, Ops)});
+        break;
+      case Inst::UAddWithOverflow:
+        I = IC.getInst(IK, InstWidth,
+                       {IC.getInst(Inst::Add, Ops[0]->Width, Ops),
+                        IC.getInst(Inst::UAddO, 1, Ops)});
+        break;
+      case Inst::SSubWithOverflow:
+        I = IC.getInst(IK, InstWidth,
+                       {IC.getInst(Inst::Sub, Ops[0]->Width, Ops),
+                        IC.getInst(Inst::SSubO, 1, Ops)});
+        break;
+      case Inst::USubWithOverflow:
+        I = IC.getInst(IK, InstWidth,
+                       {IC.getInst(Inst::Sub, Ops[0]->Width, Ops),
+                        IC.getInst(Inst::USubO, 1, Ops)});
+        break;
+      case Inst::SMulWithOverflow:
+        I = IC.getInst(IK, InstWidth,
+                       {IC.getInst(Inst::Mul, Ops[0]->Width, Ops),
+                        IC.getInst(Inst::SMulO, 1, Ops)});
+        break;
+      case Inst::UMulWithOverflow:
+        I = IC.getInst(IK, InstWidth,
+                       {IC.getInst(Inst::Mul, Ops[0]->Width, Ops),
+                        IC.getInst(Inst::UMulO, 1, Ops)});
+        break;
+      default:
+        I = IC.getInst(IK, InstWidth, Ops);
+        break;
+      }
+    }
+
+    if (hasExternalUses)
+      ExternalUsesSet.insert(I);
+    for (auto EU : ExternalUsesSet)
+      I->DepsWithExternalUses.insert(EU);
+    Context.setInst(InstName, I);
+    return true;
+  }
+
+  default:
+    ErrStr =
         makeErrStr("expected inst, block, cand, infer, result, pc, or blockpc");
-      return false;
+    return false;
   }
 }
 
-ParsedReplacement Parser::parseReplacement (std::string &ErrStr) {
+ParsedReplacement Parser::parseReplacement(std::string &ErrStr) {
   if (!consumeToken(ErrStr))
     return ParsedReplacement();
 
@@ -1386,8 +1425,8 @@ ParsedReplacement Parser::parseReplacement (std::string &ErrStr) {
   else if (RK == ReplacementKind::ParseRHS)
     ErrStr = makeErrStr("incomplete replacement, need a 'result' statement");
   else
-    ErrStr = makeErrStr(
-        "incomplete replacement, need a 'cand' statement or 'infer'/'result' pair");
+    ErrStr = makeErrStr("incomplete replacement, need a 'cand' statement or "
+                        "'infer'/'result' pair");
   return ParsedReplacement();
 }
 
@@ -1429,7 +1468,7 @@ ParsedReplacement souper::ParseReplacementRHS(InstContext &IC,
                                               ReplacementContext &RC,
                                               std::string &ErrStr) {
   std::vector<ParsedReplacement> Reps;
-  std::vector<ReplacementContext> RCs =  { RC };
+  std::vector<ReplacementContext> RCs = {RC};
   RCs.emplace_back();
   Parser P(Filename, Str, IC, Reps, ReplacementKind::ParseRHS, &RCs, 0);
   ParsedReplacement R = P.parseReplacement(ErrStr);
@@ -1458,9 +1497,9 @@ std::vector<ParsedReplacement> Parser::parseReplacements(std::string &ErrStr) {
   return Reps;
 }
 
-std::vector<ParsedReplacement> souper::ParseReplacements(
-    InstContext &IC, llvm::StringRef Filename, llvm::StringRef Str,
-    std::string &ErrStr) {
+std::vector<ParsedReplacement>
+souper::ParseReplacements(InstContext &IC, llvm::StringRef Filename,
+                          llvm::StringRef Str, std::string &ErrStr) {
   std::vector<ParsedReplacement> Reps;
   Parser P(Filename, Str, IC, Reps, ReplacementKind::ParseBoth, 0, 0);
   std::vector<ParsedReplacement> R = P.parseReplacements(ErrStr);
